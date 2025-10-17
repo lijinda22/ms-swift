@@ -27,4 +27,4 @@ swift sft \
     --dataloader_num_workers 4 \
     --model_author swift \
     --model_name swift-robot \
-    --gradient_checkpointing_kwargs '{"use_reentrant": false}'
+    --gradient_checkpointing_kwargs '{"use_reentrant": false}' 
