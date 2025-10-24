@@ -165,6 +165,7 @@ This list inherits from the Transformers `Seq2SeqTrainingArguments`, with ms-swi
 - adam_beta1: Default is 0.9.
 - adam_beta2: Default is 0.95.
 - 🔥learning_rate:  Learning rate. **Default is `1e-5` for full-parameter training, and `1e-4` for LoRA and other tuners**.
+  - Tip: If you want to set `min_lr`, you can pass the arguments `--lr_scheduler_type cosine_with_min_lr --lr_scheduler_kwargs '{"min_lr": 1e-6}'`.
 - 🔥vit_lr: Specifies the learning rate for the ViT module when training multimodal models. Default is `None`, same as `learning_rate`.
   - Typically used together with `--freeze_vit` and `--freeze_aligner`.
 - 🔥aligner_lr: Specifies the learning rate for the aligner module in multimodal models. Default is `None`, same as `learning_rate`.
@@ -369,6 +370,7 @@ Parameter meanings can be found in the [vllm documentation](https://docs.vllm.ai
 - 🔥vllm_max_model_len: The maximum sequence length supported by the model. Default is `None`, meaning it will be read from `config.json`.
 - vllm_disable_custom_all_reduce: Disables the custom all-reduce kernel and falls back to NCCL. For stability, the default is `True`.
 - vllm_enforce_eager: Determines whether vllm uses PyTorch eager mode or constructs a CUDA graph, default is `False`. Setting it to True can save memory but may affect efficiency.
+- vllm_mm_processor_cache_gb: The size (in GiB) of the multimodal processor cache, used to store processed multimodal inputs (e.g., images, videos) to avoid redundant processing. Default is 4. Setting it to 0 disables the cache but may degrade performance (not recommended). This option takes effect only for multimodal models.
 - vllm_disable_cascade_attn: Whether to forcibly disable the V1 engine’s cascade-attention implementation to avoid potential numerical issues. Defaults to False; vLLM’s internal heuristics determine whether cascade attention is actually used.
 - 🔥vllm_limit_mm_per_prompt: Controls the use of multiple media in vllm, default is `None`. For example, you can pass in `--vllm_limit_mm_per_prompt '{"image": 5, "video": 2}'`.
 - vllm_max_lora_rank: Default is `16`. This is the parameter supported by vllm for lora.
@@ -377,6 +379,7 @@ Parameter meanings can be found in the [vllm documentation](https://docs.vllm.ai
   - The default value of this parameter is `False` in "ms-swift<3.9.1".
 - vllm_use_async_engine: Whether to use the async engine under the vLLM backend. The deployment status (swift deploy) defaults to True, and other statuses default to False.
 - vllm_reasoning_parser: Reasoning parser type, used for parsing the chain of thought content of reasoning models. Default is `None`. Only used for the `swift deploy` command. Available types can be found in the [vLLM documentation](https://docs.vllm.ai/en/latest/features/reasoning_outputs.html#streaming-chat-completions).
+- vllm_engine_kwargs: Extra arguments for vllm, formatted as a JSON string. Default is `None`.
 
 ### SGLang Arguments
 Parameter meanings can be found in the [sglang documentation](https://docs.sglang.ai/backend/server_arguments.html).
@@ -468,7 +471,7 @@ RLHF arguments inherit from the [training arguments](#training-arguments).
 - 🔥rpo_alpha: A parameter from the [RPO paper](https://arxiv.org/abs/2404.19733) that controls the weight of the NLL term (i.e., the SFT loss) in the loss function, where `loss = dpo_loss + rpo_alpha * sft_loss`. The paper recommends setting it to `1.`. The default value is `None`, meaning the SFT loss is not included by default.
 - ld_alpha: From the [LD-DPO paper](https://arxiv.org/abs/2409.06411). Applies a weight α < 1 to the log-probabilities of tokens that lie beyond the shared prefix of the chosen and rejected responses, thereby mitigating length bias.
 - discopop_tau: Temperature parameter τ from the [DiscoPOP paper](https://arxiv.org/abs/2406.08414) used to scale the log-ratio before the sigmoid modulation. Default 0.05; only active when loss_type is discopop.
-  - Note: In "ms-swift<3.8", the default value was `1.`. Starting from "ms-swift>=3.8", the default has been changed to `None`.
+  - **Note**: In "ms-swift<3.8", the default value was `1.`. Starting from "ms-swift>=3.8", the default has been changed to `None`.
 - loss_type: Type of loss function. Default is None, with different defaults depending on the RLHF algorithm used.
   - DPO: Available options can be found in the [documentation](https://huggingface.co/docs/trl/main/en/dpo_trainer#loss-functions). Multiple values can be provided to enable mixed training ([MPO](https://arxiv.org/abs/2411.10442)); when multiple values are given, the loss_weights parameter must also be set. Default is `sigmoid`.
   - GRPO: See [GRPO parameters](#grpo-arguments) for reference.
@@ -497,6 +500,8 @@ The reward model parameters will be used in PPO and GRPO.
 - teacher_adapters: Default is `[]`.
 - teacher_model_type: Default is None.
 - teacher_model_revision: Default is None.
+- teacher_deepspeed: Same as the deepspeed parameter, controls the DeepSpeed configuration for the teacher model. By default, uses the DeepSpeed configuration of the training model.
+
 
 #### PPO Arguments
 
@@ -773,7 +778,7 @@ For the meaning of the arguments, please refer to [here](https://modelscope.cn/m
 - MAX_NUM: Default is 12
 - INPUT_SIZE: Default is 448
 
-### internvl2, internvl2_phi3, internvl2_5, internvl3
+### internvl2, internvl2_phi3, internvl2_5, internvl3, internvl3_5
 For the meaning of the arguments, please refer to [here](https://modelscope.cn/models/OpenGVLab/InternVL2_5-2B)
 - MAX_NUM: Default is 12
 - INPUT_SIZE: Default is 448
