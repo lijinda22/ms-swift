@@ -42,7 +42,7 @@ class GenerationArguments:
             self.stream = False
 
     def get_request_config(self):
-        if getattr(self, 'task_type') != 'causal_lm':
+        if getattr(self, "task_type") != "causal_lm":
             return
         from swift.llm import RequestConfig
 
@@ -56,4 +56,5 @@ class GenerationArguments:
             stream=self.stream,
             repetition_penalty=self.repetition_penalty,
             logprobs=self.logprobs,
-            top_logprobs=self.top_logprobs)
+            top_logprobs=self.top_logprobs,
+        )

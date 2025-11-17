@@ -3,7 +3,9 @@ import os
 from typing import List, Union
 
 
-def to_abspath(path: Union[str, List[str], None], check_path_exist: bool = False) -> Union[str, List[str], None]:
+def to_abspath(
+    path: Union[str, List[str], None], check_path_exist: bool = False
+) -> Union[str, List[str], None]:
     """Check the path for validity and convert it to an absolute path.
 
     Args:
@@ -21,7 +23,7 @@ def to_abspath(path: Union[str, List[str], None], check_path_exist: bool = False
         if check_path_exist and not os.path.exists(path):
             raise FileNotFoundError(f"path: '{path}'")
         return path
-    assert isinstance(path, list), f'path: {path}'
+    assert isinstance(path, list), f"path: {path}"
     res = []
     for v in path:
         res.append(to_abspath(v, check_path_exist))

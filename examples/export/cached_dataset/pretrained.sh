@@ -1,39 +1,59 @@
+PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 swift export \
-    --model Qwen/Qwen2.5-7B \
-    --dataset 'AI-ModelScope/ruozhiba:all' \
+    --model /data/ckpt/Qwen3-VL-2B-Instruct \
+    --dataset "/data/ljd/VLM-R1/dataset/pretrain/pretrain_dataset.jsonl" \
+    --dataset_num_proc 4 \
     --max_length 8192 \
-    --dataset_num_proc 64 \
-    --to_cached_dataset true \
-    --split_dataset_ratio 0.01 \
+    --split_dataset_ratio 0.05 \
     --use_chat_template false \
     --loss_scale all \
-    --output_dir ./pretrain_cached_dataset
+    --output_dir /data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset \
+    --to_cached_dataset true
+
 
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NPROC_PER_NODE=4 \
+IMAGE_MAX_TOKEN_NUM=1024 \
+VIDEO_MAX_TOKEN_NUM=128 \
+FPS_MAX_FRAMES=16 \
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 swift pt \
-    --model Qwen/Qwen2.5-7B \
+    --model /data/ckpt/Qwen3-VL-2B-Instruct \
     --train_type full \
-    --cached_dataset './pretrain_cached_dataset' \
-    --num_train_epochs 3 \
-    --split_dataset_ratio 0.01 \
+    --cached_dataset '/data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset' \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
+    --split_dataset_ratio 0.05 \
+    --max_steps 500 \
     --learning_rate 1e-5 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 16 \
     --packing true \
-    --eval_steps 200 \
-    --save_steps 200 \
-    --logging_steps 5 \
-    --max_length 8192 \
-    --warmup_ratio 0.05 \
-    --dataloader_num_workers 8 \
-    --dataset_num_proc 8 \
+    --eval_steps 100 \
+    --save_steps 100 \
     --save_total_limit 2 \
-    --save_only_model true \
-    --output_dir output/Qwen2.5-7B \
+    --logging_steps 5 \
     --deepspeed zero3 \
-    --use_liger_kernel true \
-    --attn_impl flash_attn
+    --max_length 4096 \
+    --warmup_ratio 0.05 \
+    --dataloader_num_workers 4 \
+    --dataset_num_proc 4 \
+    --padding_free true \
+    --save_only_model true \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_pretrain \
+    --attn_impl flash_attn \
+    --check_model false \
+    --load_from_cache_file true \
+    --freeze_vit False \
+    --freeze_aligner False \
+    --gradient_checkpointing true \
+    --vit_gradient_checkpointing false \
+    --report_to tensorboard \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_pretrain/logs \
+    # --resume_from_checkpoint true
+
+    # --train_type lora \
+    # --lora_rank 8 \
+    # --lora_alpha 32 \
+    # --target_modules all-linear \
+    # --num_train_epochs 1 \

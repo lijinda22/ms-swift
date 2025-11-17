@@ -1,0 +1,6 @@
+{
+  "sessionTokenLimit": 256000,
+  "experimental": {
+    "vlmSwitchMode": "session"
+  }
+}

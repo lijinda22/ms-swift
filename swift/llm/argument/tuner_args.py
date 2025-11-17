@@ -95,10 +95,11 @@ class TunerArguments:
         reft_intervention_type (Literal): Type of intervention for ReFT. Default is 'LoreftIntervention'.
         reft_args (Optional[str]): Additional arguments for ReFT. Default is None.
     """
+
     # full
     freeze_parameters: List[str] = field(default_factory=list)
     freeze_parameters_regex: Optional[str] = None
-    freeze_parameters_ratio: float = 0.  # 0 ~ 1
+    freeze_parameters_ratio: float = 0.0  # 0 ~ 1
     trainable_parameters: List[str] = field(default_factory=list)
     trainable_parameters_regex: Optional[str] = None
     # lora or full
@@ -106,7 +107,7 @@ class TunerArguments:
     freeze_vit: bool = True
     freeze_aligner: bool = True
     # tuners
-    target_modules: List[str] = field(default_factory=lambda: ['all-linear'])
+    target_modules: List[str] = field(default_factory=lambda: ["all-linear"])
     target_regex: Optional[str] = None
     target_parameters: Optional[List[str]] = None
     # e.g. ['wte', 'ln_1', 'ln_2', 'ln_f', 'lm_head']
@@ -116,8 +117,8 @@ class TunerArguments:
     lora_rank: int = 8
     lora_alpha: int = 32
     lora_dropout: float = 0.05
-    lora_bias: Literal['none', 'all'] = 'none'
-    lora_dtype: Literal['float16', 'bfloat16', 'float32', None] = None
+    lora_bias: Literal["none", "all"] = "none"
+    lora_dtype: Literal["float16", "bfloat16", "float32", None] = None
     lorap_lr_ratio: Optional[float] = None
     use_rslora: bool = False
     use_dora: bool = False
@@ -125,12 +126,12 @@ class TunerArguments:
     lora_ga_batch_size: int = 2
     lora_ga_iters: int = 2
     lora_ga_max_length: int = 1024
-    lora_ga_direction: str = 'ArB2r'
-    lora_ga_scale: str = 'stable'
+    lora_ga_direction: str = "ArB2r"
+    lora_ga_scale: str = "stable"
     lora_ga_stable_gamma: int = 16
 
     # Bone: Literal['bat', 'true', 'false']
-    init_weights: str = 'true'
+    init_weights: str = "true"
 
     # fourierft
     fourier_n_frequency: int = 2000
@@ -149,7 +150,7 @@ class TunerArguments:
     vera_d_initial: float = 0.1
 
     # adapter
-    adapter_act: str = 'gelu'
+    adapter_act: str = "gelu"
     adapter_length: int = 128
 
     # galore
@@ -158,7 +159,7 @@ class TunerArguments:
     galore_rank: int = 128
     galore_update_proj_gap: int = 50
     galore_scale: float = 1.0
-    galore_proj_type: str = 'std'
+    galore_proj_type: str = "std"
     galore_optim_per_parameter: bool = False
     galore_with_embedding: bool = False
     galore_quantization: bool = False
@@ -191,13 +192,21 @@ class TunerArguments:
     reft_layer_key: Optional[str] = None
     reft_layers: Optional[List[int]] = None
     reft_rank: int = 4
-    reft_intervention_type: Literal['NoreftIntervention', 'LoreftIntervention', 'ConsreftIntervention',
-                                    'LobireftIntervention', 'DireftIntervention',
-                                    'NodireftIntervention'] = 'LoreftIntervention'
+    reft_intervention_type: Literal[
+        "NoreftIntervention",
+        "LoreftIntervention",
+        "ConsreftIntervention",
+        "LobireftIntervention",
+        "DireftIntervention",
+        "NodireftIntervention",
+    ] = "LoreftIntervention"
     reft_args: Optional[str] = None
 
     def __post_init__(self):
-        if isinstance(self.init_weights, str) and self.init_weights.lower() in {'true', 'false'}:
+        if isinstance(self.init_weights, str) and self.init_weights.lower() in {
+            "true",
+            "false",
+        }:
             self.init_weights = bool(strtobool(self.init_weights))
         self._init_multimodal_full()
         if self.target_regex:
@@ -205,7 +214,11 @@ class TunerArguments:
 
     def _init_multimodal_full(self):
         model_arch = self.model_meta.model_arch
-        if not self.model_meta.is_multimodal or not model_arch or self.train_type != 'full':
+        if (
+            not self.model_meta.is_multimodal
+            or not model_arch
+            or self.train_type != "full"
+        ):
             return
         if self.freeze_llm:
             self.freeze_parameters += model_arch.language_model
@@ -217,6 +230,6 @@ class TunerArguments:
             self.trainable_parameters += model_arch.aligner
         self.freeze_parameters += model_arch.generator
         if self.freeze_parameters:
-            logger.info(f'freeze_parameters: {self.freeze_parameters}')
+            logger.info(f"freeze_parameters: {self.freeze_parameters}")
         if self.trainable_parameters:
-            logger.info(f'additional trainable_parameters: {self.trainable_parameters}')
+            logger.info(f"additional trainable_parameters: {self.trainable_parameters}")
