@@ -1,4 +1,7 @@
 # some code borrowed from https://github.com/Visual-Agent/DeepEyes/blob/main
+"""This plugin implements the reward calculation and multi-turn tool-use scheduler
+for the DeepEyes/VisualToolbox dataset, enabling models to interact with and analyze images
+by zooming into specific regions."""
 
 import base64
 import io
@@ -18,7 +21,9 @@ from swift.plugin.orm import ORM, orms
 try:
     from math_verify import parse, verify
 except ImportError as e:
-    raise ImportError('please install math_verify by `pip install math_verify==0.5.2`') from e
+    raise ImportError(
+        "please install math_verify by `pip install math_verify==0.5.2`"
+    ) from e
 """
 3 dataset file
     1. data_v0.8_visual_toolbox_v2.parquet:  data_source == 'chart' (vl_agent.compute_score)
@@ -58,16 +63,18 @@ Professional, scientific.
 {gold_ans}
 
 ## Student Final Answer
-{pred_ans}"""# noqa
+{pred_ans}"""  # noqa
 
 
 def extract_answer(action_string: str) -> Dict[str, any]:
-    answer = re.findall(r'<answer>(.*?)</answer>', action_string, re.DOTALL)
+    answer = re.findall(r"<answer>(.*?)</answer>", action_string, re.DOTALL)
     return answer[-1] if answer else None
 
 
 def extract_action(action_string: str) -> Dict[str, Any]:
-    tool_call_match = re.findall(r'<tool_call>(.*?)</tool_call>', action_string, re.DOTALL)
+    tool_call_match = re.findall(
+        r"<tool_call>(.*?)</tool_call>", action_string, re.DOTALL
+    )
     return tool_call_match[-1] if tool_call_match else None
 
 
@@ -76,7 +83,7 @@ def get_chat_template():
 Below are two answers to a question. Question is [Question], [Standard Answer] is the standard answer to the question, and [Model_answer] is the answer extracted from a model's output to this question.  Determine whether these two answers are consistent.
 Note that [Model Answer] is consistent with [Standard Answer] whenever they are essentially the same. If the meaning is expressed in the same way, it is considered consistent, for example, 'pink' and 'it is pink'.
 If they are consistent, Judement is 1; if they are different, Judement is 0. Just output Judement and don't output anything else.\n\n
-"""# noqa
+"""  # noqa
     return chat_template
 
 
@@ -86,49 +93,49 @@ def get_gpt4_score_ICE():
 [Standard Answer]: The countertop is tan.
 [Model_answer] : tan
 Judgement: 1
-""" # noqa
+"""  # noqa
 
     example_2 = """
 [Question]: On which side of the picture is the barrier?
 [Standard Answer]: The barrier is on the left side of the picture.
 [Model_answer] : left
 Judgement: 1
-""" # noqa
+"""  # noqa
 
     example_3 = """
 [Question]: Is the kite brown and large?
 [Standard Answer]: Yes, the kite is brown and large.
 [Model_answer] : Yes
 Judgement: 1
-""" # noqa
+"""  # noqa
 
     example_4 = """
 [Question]: Are the spots on a giraffe?
 [Standard Answer]: No, the spots are on a banana.
 [Model_answer] : no
 Judgement: 1
-""" # noqa
+"""  # noqa
 
     example_5 = """
 [Question]: Who is wearing pants?
 [Standard Answer]: The boy is wearing pants.
 [Model_answer] : The person in the picture is wearing pants.
 Judgement: 1
-""" # noqa
+"""  # noqa
 
     example_6 = """
 [Question]: Is the man phone both blue and closed?
 [Standard Answer]: Yes, the man phone is both blue and closed.
 [Model_answer] : No.
 Judgement: 0
-""" # noqa
+"""  # noqa
 
     example_7 = """
 [Question]: What color is the towel in the center of the picture?
 [Standard Answer]: The towel in the center of the picture is blue.
 [Model_answer] : The towel in the center of the picture is pink.
 Judgement: 0
-""" # noqa
+"""  # noqa
 
     return [example_1, example_2, example_3, example_4, example_5, example_6, example_7]
 
@@ -138,13 +145,13 @@ def get_prompt(predict_str, ground_truth, question):
     chat_template = get_chat_template()
     demo_prompt = chat_template
     for example in examples:
-        demo_prompt += example + '\n\n'
+        demo_prompt += example + "\n\n"
     test_prompt = f"""
 [Question]: {question}
 [Standard Answer]: {ground_truth}
 [Model_answer] : {predict_str}
 Judgement:"""
-    full_prompt = f'{demo_prompt}{test_prompt}'
+    full_prompt = f"{demo_prompt}{test_prompt}"
 
     return full_prompt
 
@@ -155,14 +162,14 @@ def load_pil_image(img):
             return img
 
         elif isinstance(img, Dict):
-            return Image.open(io.BytesIO(img['bytes']))
+            return Image.open(io.BytesIO(img["bytes"]))
 
         elif isinstance(img, str):
             if os.path.exists(img):
                 return Image.open(img)
 
-            if ',' in img:
-                img_data = img.split(',')[1]
+            if "," in img:
+                img_data = img.split(",")[1]
             else:
                 img_data = img
             img_bytes = base64.b64decode(img_data)
@@ -171,7 +178,7 @@ def load_pil_image(img):
         elif isinstance(img, bytes):
             return Image.open(io.BytesIO(img))
 
-        elif hasattr(img, 'read'):
+        elif hasattr(img, "read"):
             return Image.open(img)
         else:
             return img
@@ -187,31 +194,43 @@ def rule_math_verify(ground_truth, model_answer):
 
 
 class DeepEyesReward(ORM):
+    """
+    An ORM (Online Reward Model) that calculates rewards for the DeepEyes task.
+    It uses an "LLM-as-a-judge" approach, calling a separate verification model
+    to score the correctness of the generated answer.
+    """
 
     def __init__(self):
         super().__init__()
         try:
+            # Connect to a local OpenAI-compatible API (e.g., vLLM) for verification.
             self.client = OpenAI(
-                api_key='EMPTY',
-                base_url='http://127.0.0.1:8000/v1',
+                api_key="EMPTY",
+                base_url="http://127.0.0.1:8000/v1",
             )
             self.verify_model_name = self.client.models.list().data[0].id
         except Exception as e:
-            raise RuntimeError('Failed to connect to the model service. Please deploy the model '
-                               "using 'swift deploy' or 'vllm serve'.") from e
+            raise RuntimeError(
+                "Failed to connect to the model service. Please deploy the model "
+                "using 'swift deploy' or 'vllm serve'."
+            ) from e
 
-    def __call__(self, completions, reward_model, extra_info, data_source, **kwargs) -> List[float]:
+    def __call__(
+        self, completions, reward_model, extra_info, data_source, **kwargs
+    ) -> List[float]:
         # reference: https://github.com/Visual-Agent/DeepEyes/blob/main/verl/utils/reward_score/vl_agent.py
         # NOTE: reward_model is a column name from the dataset, which contains the ground truth answer
         rewards = []
-        messages = kwargs.get('messages')
-        for completion, solution, info, source, message in zip(completions, reward_model, extra_info, data_source,
-                                                               messages):
-            sol = solution['ground_truth']
-            info['messages'] = message
-            if source in ['vstar', 'chart']:
+        messages = kwargs.get("messages")
+        for completion, solution, info, source, message in zip(
+            completions, reward_model, extra_info, data_source, messages
+        ):
+            sol = solution["ground_truth"]
+            info["messages"] = message
+            # Dispatch to the appropriate scoring function based on the data source.
+            if source in ["vstar", "chart"]:
                 rewards.append(self.compute_score(completion, sol, info))
-            elif source in ['thinklite_eureka']:
+            elif source in ["thinklite_eureka"]:
                 rewards.append(self.compute_score_math(completion, sol, info))
             else:
                 raise NotImplementedError
@@ -219,56 +238,55 @@ class DeepEyesReward(ORM):
         return rewards
 
     def compute_score(self, predict_str: str, ground_truth: str, extra_info) -> float:
+        """
+        Computes the reward for general VQA tasks.
+        The final reward is a combination of accuracy, tool usage, and format correctness.
+        """
         is_format_error = False
         # predict_str = "<think>" + predict_str
-        count_think_1 = predict_str.count('<think>')
-        count_think_2 = predict_str.count('</think>')
+        count_think_1 = predict_str.count("<think>")
+        count_think_2 = predict_str.count("</think>")
         if count_think_1 != count_think_2:
             is_format_error = True
-        count_tool_1 = predict_str.count('<tool_call>')
-        count_tool_2 = predict_str.count('</tool_call>')
+        count_tool_1 = predict_str.count("<tool_call>")
+        count_tool_2 = predict_str.count("</tool_call>")
         if count_tool_1 != count_tool_2:
             is_format_error = True
 
-        predict_no_think = predict_str.split('</think>')[-1].strip()
-        count_answer_1 = predict_no_think.count('<answer>')
-        count_answer_2 = predict_no_think.count('</answer>')
+        predict_no_think = predict_str.split("</think>")[-1].strip()
+        count_answer_1 = predict_no_think.count("<answer>")
+        count_answer_2 = predict_no_think.count("</answer>")
         if count_answer_1 != count_answer_2:
             is_format_error = True
 
-        answer_text = predict_str.split('<answer>')[-1].split('</answer>')[0].strip()
+        answer_text = predict_str.split("<answer>")[-1].split("</answer>")[0].strip()
 
-        question_text = extra_info['question']
+        question_text = extra_info["question"]
         full_prompt = get_prompt(answer_text, ground_truth, question_text)
 
+        # Use LLM-as-a-judge to get the accuracy reward.
         chat_response = self.client.chat.completions.create(
             model=self.verify_model_name,
             messages=[
-                {
-                    'role': 'system',
-                    'content': 'You are a helpful assistant.'
-                },
-                {
-                    'role': 'user',
-                    'content': full_prompt
-                },
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": full_prompt},
             ],
             seed=random.randint(0, 1000000),
             temperature=0.3,
         )
         response = chat_response.choices[0].message.content.strip()
-        if 'Judgement:' in response:
-            response = response.split('Judgement:')[-1].strip()
-            if '1' in response:
+        if "Judgement:" in response:
+            response = response.split("Judgement:")[-1].strip()
+            if "1" in response:
                 acc_reward = 1.0
-            elif '0' in response:
+            elif "0" in response:
                 acc_reward = 0.0
             else:
                 acc_reward = 0.0
         else:
-            if response == '1':
+            if response == "1":
                 acc_reward = 1.0
-            elif response == '0':
+            elif response == "0":
                 acc_reward = 0.0
             else:
                 acc_reward = 0.0
@@ -279,26 +297,33 @@ class DeepEyesReward(ORM):
             is_format_error = True
 
         num_image = 0
-        for message in extra_info['messages']:
-            if message['role'] == 'user' and '<image>' in message['content']:
+        for message in extra_info["messages"]:
+            if message["role"] == "user" and "<image>" in message["content"]:
                 num_image += 1
-        # More than one image indicates a successful tool call.
+        # Reward for successfully using the tool (indicated by more than one image in history).
         tool_reward = 1.0 if num_image > 1 and acc_reward > 0.5 else 0.0
+        # Penalize for malformed output tags.
         format_reward = -1.0 if is_format_error else 0.0
 
         return 0.8 * acc_reward + 0.2 * format_reward + 1.2 * tool_reward
 
-    def compute_score_math(self, predict_str: str, ground_truth: str, extra_info=None) -> float:
+    def compute_score_math(
+        self, predict_str: str, ground_truth: str, extra_info=None
+    ) -> float:
+        """
+        Computes the reward for math problems.
+        It first tries a strict rule-based verification and falls back to LLM-as-a-judge.
+        """
         is_format_error = False
         # predict_str = "<think>" + predict_str
-        count_think_1 = predict_str.count('<think>')
-        count_think_2 = predict_str.count('</think>')
+        count_think_1 = predict_str.count("<think>")
+        count_think_2 = predict_str.count("</think>")
         if count_think_1 != count_think_2:
             is_format_error = True
 
-        model_answer = ''
-        predict_no_think = predict_str.split('</think>')[-1].strip()
-        answer_pattern = r'\\boxed{([^}]+)}'
+        model_answer = ""
+        predict_no_think = predict_str.split("</think>")[-1].strip()
+        answer_pattern = r"\\boxed{([^}]+)}"
         answer_list = re.findall(answer_pattern, predict_no_think, flags=re.DOTALL)
         if len(answer_list) == 0:
             acc_reward = 0.0
@@ -308,25 +333,24 @@ class DeepEyesReward(ORM):
                 is_format_error = True
 
             model_answer = answer_list[-1]
+            # 1. Try rule-based verification for mathematical equivalence.
             if rule_math_verify(ground_truth, model_answer):
                 acc_reward = 1.0
             else:
+                # 2. Fallback to LLM-as-a-judge if rule-based check fails.
                 acc_reward = 0
                 full_prompt = MATH_VERIFY_PROMPT.format(
-                    query=extra_info['question'],
+                    query=extra_info["question"],
                     gold_ans=ground_truth,
                     pred_ans=model_answer,
                 )
-                response = ''
+                response = ""
                 for _ in range(8):
                     try:
                         chat_response = self.client.chat.completions.create(
                             model=self.verify_model_name,
                             messages=[
-                                {
-                                    'role': 'user',
-                                    'content': full_prompt
-                                },
+                                {"role": "user", "content": full_prompt},
                             ],
                             seed=random.randint(0, 1000000),
                             temperature=0.0,
@@ -335,87 +359,119 @@ class DeepEyesReward(ORM):
                         break
                     except Exception:
                         continue
-                judgement = response.split('## Equivalence Judgement')[-1].lower()
-                if 'true' in judgement and 'false' not in judgement:
+                judgement = response.split("## Equivalence Judgement")[-1].lower()
+                if "true" in judgement and "false" not in judgement:
                     acc_reward = 1.0
 
         format_reward = -1.0 if is_format_error else 0.0
         return 1.2 * acc_reward + 0.4 * format_reward
 
 
-orms['deepeyes_reward'] = DeepEyesReward
+orms["deepeyes_reward"] = DeepEyesReward
 
 
 class VisualToolBoxScheduler(MultiTurnScheduler):
-    user_prompt = ('\nThink first, call **image_zoom_in_tool** if needed, then answer. '
-                   'Format strictly as:  <think>...</think>  <tool_call>...</tool_call> (if tools needed)'
-                   '  <answer>...</answer> ')
+    """
+    A multi-turn scheduler that handles the `image_zoom_in_tool` interaction.
+    It parses the model's tool call, crops the image, and prepares the input for the next turn.
+    """
+
+    user_prompt = (
+        "\nThink first, call **image_zoom_in_tool** if needed, then answer. "
+        "Format strictly as:  <think>...</think>  <tool_call>...</tool_call> (if tools needed)"
+        "  <answer>...</answer> "
+    )
 
     def __init__(self, infer_engine=None, max_turns=None, *args, **kwargs):
         super().__init__(infer_engine, max_turns, *args, **kwargs)
 
     def check_finished(self, infer_request, response_choice, current_turn):
-        should_stop = super().check_finished(infer_request, response_choice, current_turn)
+        should_stop = super().check_finished(
+            infer_request, response_choice, current_turn
+        )
         if should_stop:
             return True
 
-        last_completion = infer_request.messages[-1]['content']
+        last_completion = infer_request.messages[-1]["content"]
 
         action = extract_action(last_completion)
-        # if the last completion is a tool call, do not finished yet
+        # If the model issues a tool call, the conversation is not finished.
         if action:
             return False
 
         return True
 
     def step(self, infer_request, response_choice, current_turn):
+        """
+        Executes one step of the tool-use interaction.
+        Parses the tool call, crops the image, and constructs the next user message.
+        """
         from qwen_vl_utils import fetch_image
+
         completion = response_choice.message.content
         action = extract_action(completion)
         cropped_img = None
         extra_info = {}
         try:
+            # 1. Parse the tool call from the model's output.
             tool_call = json.loads(action.strip())
-            tool_name = tool_call['name']
-            if tool_name != 'image_zoom_in_tool':
-                raise ValueError(f'Unknown tool name: {tool_name}')
-            args = tool_call['arguments']
-            bbox = args['bbox_2d']
+            tool_name = tool_call["name"]
+            if tool_name != "image_zoom_in_tool":
+                raise ValueError(f"Unknown tool name: {tool_name}")
+            args = tool_call["arguments"]
+            bbox = args["bbox_2d"]
             # NOTE: this function is only compatible with the QwenVL series models
             # If you use another MLLM, please adjust the fetch_image function accordingly
             # ensure the returned img is of type PIL.Image.Image and
             # has been processed to a maximum size of max_pixels
-            img = fetch_image({'image': load_pil_image(infer_request.images[0])})
+            img = fetch_image({"image": load_pil_image(infer_request.images[0])})
 
             origin_height = img.height
             origin_width = img.width
-            bbox = self.maybe_resize_bbox(bbox=bbox, origin_width=origin_width, origin_height=origin_height)
+            # 2. Validate and resize the bounding box if necessary.
+            bbox = self.maybe_resize_bbox(
+                bbox=bbox, origin_width=origin_width, origin_height=origin_height
+            )
+            # 3. Crop the image using the bounding box.
             # for invalid bbox, the exception will be catched in except block
             cropped_img = img.crop(bbox)
-            query = '<tool_response>' + '<image>' + self.user_prompt + '</tool_response>'
+            # 4. Prepare the prompt for the next turn, including the cropped image.
+            query = (
+                "<tool_response>" + "<image>" + self.user_prompt + "</tool_response>"
+            )
         except Exception as e:
-            error_msg = f'Invalid tool call format: {action.strip()}. Error: {e}'
-            query = f'Error: {str(error_msg)}'
+            # Handle cases where the tool call is invalid.
+            error_msg = f"Invalid tool call format: {action.strip()}. Error: {e}"
+            query = f"Error: {str(error_msg)}"
 
-        infer_request.messages.append({'role': 'user', 'content': query})
+        # Append the new user message to the conversation history.
+        infer_request.messages.append({"role": "user", "content": query})
         if cropped_img:
+            # Add the new cropped image for the next turn.
             infer_request.images.append(cropped_img)
         # override the images
-        extra_info['images'] = infer_request.images
+        extra_info["images"] = infer_request.images
 
         # Return dictionary format according to new MultiTurnScheduler interface
-        return {'infer_request': infer_request, 'rollout_infos': extra_info}
+        return {"infer_request": infer_request, "rollout_infos": extra_info}
 
     def validate_bbox(self, left, top, right, bottom):
-        assert left < right and bottom > top, f'invalid shape for {left=}, {top=}, {right=}, {bottom=}'
+        assert (
+            left < right and bottom > top
+        ), f"invalid shape for {left=}, {top=}, {right=}, {bottom=}"
         height = bottom - top
         width = right - left
-        assert max(height, width) / min(height,
-                                        width) <= 100, f'aspect ratio error: {left=}, {top=}, {right=}, {bottom=}'
-        assert min(height, width) > 30, f'{height=}, {width=} is too small'
+        assert (
+            max(height, width) / min(height, width) <= 100
+        ), f"aspect ratio error: {left=}, {top=}, {right=}, {bottom=}"
+        assert min(height, width) > 30, f"{height=}, {width=} is too small"
         return True
 
     def maybe_resize_bbox(self, bbox, origin_width, origin_height):
+        """
+        Validates and resizes the bounding box to ensure it's within image bounds
+        and meets a minimum size requirement.
+        """
         left, top, right, bottom = bbox
 
         left = max(0, left)
@@ -426,6 +482,7 @@ class VisualToolBoxScheduler(MultiTurnScheduler):
 
         height = bottom - top
         width = right - left
+        # If the box is too small, expand it from the center.
         if height < 28 or width < 28:
             center_x = (left + right) / 2.0
             center_y = (top + bottom) / 2.0
@@ -441,4 +498,4 @@ class VisualToolBoxScheduler(MultiTurnScheduler):
         return [left, top, right, bottom]
 
 
-multi_turns['deepeyes_scheduler'] = VisualToolBoxScheduler
+multi_turns["deepeyes_scheduler"] = VisualToolBoxScheduler

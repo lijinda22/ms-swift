@@ -118,7 +118,9 @@ class PatchEmbed(nn.Module):
             self.flatten = flatten
             self.output_fmt = Format.NCHW
 
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
+        self.proj = nn.Conv2d(
+            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias
+        )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
         ### Mask Image Modeling
@@ -175,7 +177,11 @@ class Attention(nn.Module):
 
     def forward(self, x, return_attention=False):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -239,7 +245,9 @@ class Block(nn.Module):
             proj_drop=proj_drop,
             norm_layer=norm_layer,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.norm2 = norm_layer(dim)
@@ -249,7 +257,9 @@ class Block(nn.Module):
             act_layer=act_layer,
             drop=proj_drop,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
@@ -342,7 +352,9 @@ class VisionTransformer(nn.Module):
 
         self.num_classes = num_classes
         self.global_pool = global_pool
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = (
+            embed_dim  # num_features for consistency with other models
+        )
         self.num_prefix_tokens = 1 if class_token else 0
         self.no_embed_class = no_embed_class
         self.grad_checkpointing = False
@@ -357,8 +369,12 @@ class VisionTransformer(nn.Module):
         )
         num_patches = self.patch_embed.num_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
-        embed_len = num_patches if no_embed_class else num_patches + self.num_prefix_tokens
+        self.cls_token = (
+            nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
+        )
+        embed_len = (
+            num_patches if no_embed_class else num_patches + self.num_prefix_tokens
+        )
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * 0.02)
         self.pos_drop = nn.Dropout(p=pos_drop_rate)
 
@@ -371,7 +387,9 @@ class VisionTransformer(nn.Module):
             self.patch_drop = nn.Identity()
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        dpr = [
+            x.item() for x in torch.linspace(0, drop_path_rate, depth)
+        ]  # stochastic depth decay rule
         self.blocks = nn.Sequential(
             *[
                 block_fn(
@@ -396,7 +414,9 @@ class VisionTransformer(nn.Module):
         # Classifier Head
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head_drop = nn.Dropout(drop_rate)  # new
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        self.head = (
+            nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        )
 
         if weight_init != "skip":
             self.init_weights(weight_init)
@@ -449,7 +469,9 @@ class VisionTransformer(nn.Module):
         if global_pool is not None:
             assert global_pool in ("", "avg", "token")
             self.global_pool = global_pool
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        self.head = (
+            nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        )
 
     def _pos_embed(self, x, w, h):
         if self.no_embed_class:
@@ -472,7 +494,9 @@ class VisionTransformer(nn.Module):
         n: Union[int, Sequence] = 1,
     ):
         outputs, num_blocks = [], len(self.blocks)
-        take_indices = set(range(num_blocks - n, num_blocks) if isinstance(n, int) else n)
+        take_indices = set(
+            range(num_blocks - n, num_blocks) if isinstance(n, int) else n
+        )
 
         # forward pass
         x = self.patch_embed(x)
@@ -503,7 +527,12 @@ class VisionTransformer(nn.Module):
 
         if reshape:
             grid_size = self.patch_embed.grid_size
-            outputs = [out.reshape(x.shape[0], grid_size[0], grid_size[1], -1).permute(0, 3, 1, 2).contiguous() for out in outputs]
+            outputs = [
+                out.reshape(x.shape[0], grid_size[0], grid_size[1], -1)
+                .permute(0, 3, 1, 2)
+                .contiguous()
+                for out in outputs
+            ]
 
         if return_class_token:
             return tuple(zip(outputs, class_tokens))
@@ -525,7 +554,11 @@ class VisionTransformer(nn.Module):
 
     def forward_head(self, x, pre_logits: bool = False):
         if self.global_pool:
-            x = x[:, self.num_prefix_tokens :].mean(dim=1) if self.global_pool == "avg" else x[:, 0]
+            x = (
+                x[:, self.num_prefix_tokens :].mean(dim=1)
+                if self.global_pool == "avg"
+                else x[:, 0]
+            )
         x = self.fc_norm(x)
         x = self.head_drop(x)  # new
         return x if pre_logits else self.head(x)
@@ -553,7 +586,9 @@ class VisionTransformer(nn.Module):
     def forward(self, x, return_all_tokens=None):
         x = self.forward_features(x)
 
-        return_all_tokens = self.return_all_tokens if return_all_tokens is None else return_all_tokens
+        return_all_tokens = (
+            self.return_all_tokens if return_all_tokens is None else return_all_tokens
+        )
         if return_all_tokens:
             return x
 
@@ -574,11 +609,16 @@ class VisionTransformer(nn.Module):
         # see discussion at https://github.com/facebookresearch/dino/issues/8
         w0, h0 = w0 + 0.1, h0 + 0.1
         patch_pos_embed = nn.functional.interpolate(
-            patch_pos_embed.reshape(1, int(math.sqrt(N)), int(math.sqrt(N)), dim).permute(0, 3, 1, 2),
+            patch_pos_embed.reshape(
+                1, int(math.sqrt(N)), int(math.sqrt(N)), dim
+            ).permute(0, 3, 1, 2),
             scale_factor=(w0 / math.sqrt(N), h0 / math.sqrt(N)),
             mode="bicubic",
         )
-        assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
+        assert (
+            int(w0) == patch_pos_embed.shape[-2]
+            and int(h0) == patch_pos_embed.shape[-1]
+        )
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
 
@@ -605,8 +645,14 @@ def resize_pos_embed(model, pos_embed_w, verbose=True):
         try:
             from timm.layers import resample_abs_pos_embed
         except ImportError:
-            print(f"{__file__}: import timm utility functions failed with version {timm.__version__}!")
-        num_prefix_tokens = 0 if getattr(model, "no_embed_class", False) else getattr(model, "num_prefix_tokens", 1)
+            print(
+                f"{__file__}: import timm utility functions failed with version {timm.__version__}!"
+            )
+        num_prefix_tokens = (
+            0
+            if getattr(model, "no_embed_class", False)
+            else getattr(model, "num_prefix_tokens", 1)
+        )
         pos_embed_w = resample_abs_pos_embed(  # resize pos embedding when different size from pretrained weights
             pos_embed_w,
             new_size=model.patch_embed.grid_size,
@@ -616,7 +662,9 @@ def resize_pos_embed(model, pos_embed_w, verbose=True):
             verbose=verbose,
         )
         resized = True
-        print(f"resized pos embedding from {pos_embed_w.shape} to {model.pos_embed.shape}.")
+        print(
+            f"resized pos embedding from {pos_embed_w.shape} to {model.pos_embed.shape}."
+        )
     if not resized and verbose:
         print("pos embedding not resized.")
     return pos_embed_w
@@ -670,14 +718,10 @@ class CONCHVisionTower(nn.Module):
     def __init__(self):
         super().__init__()
         self.trunk = vit_large(init_values=1.0)
-        self.attn_pool_contrast = AttentionalPooler(d_model=768, context_dim=1024, n_head=8, n_queries=1)
+        self.attn_pool_contrast = AttentionalPooler(
+            d_model=768, context_dim=1024, n_head=8, n_queries=1
+        )
         self.ln_contrast = nn.LayerNorm(768)
-
-    # def forward(self, x):
-    #     x = self.trunk.forward_features(x)
-    #     x = self.attn_pool_contrast(x)[:, 0]
-    #     x = self.ln_contrast(x)
-    #     return x
 
     def forward(self, x):
         x = self.trunk(x)
@@ -693,7 +737,9 @@ def create_model_from_pretrained(checkpoint_path: str = None, img_size: int = 22
         checkpoint_path = "/data/ckpt/conchv1.5/pytorch_model_vision.bin"
     model = CONCHVisionTower()
     state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    state_dict["trunk.pos_embed"] = resize_pos_embed(model.trunk, state_dict["trunk.pos_embed"], verbose=True)
+    state_dict["trunk.pos_embed"] = resize_pos_embed(
+        model.trunk, state_dict["trunk.pos_embed"], verbose=True
+    )
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
     print("Missing keys: ", missing_keys)
     print("Unexpected keys: ", unexpected_keys)

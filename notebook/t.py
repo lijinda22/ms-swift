@@ -1,34 +1,55 @@
-# /data/ckpt/PathCap/processed_data.json
-# 将这个json命名改为pathcap_pair_{len}.json, len是item的数量
-# save: /data/ljd/VLM-R1/dataset/
-
 import json
-import os
 
-# 输入文件路径
-input_path = "/data/ckpt/PathCap/processed_data.json"
 
-# 读取数据
-with open(input_path, "r", encoding="utf-8") as f:
-    data = json.load(f)
+def process_jsonl(input_file_path: str, output_file_path: str):
+    """
+    Reads a JSONL file, extracts 'reasoning_cot_lingshu32b' and 'correct_answer',
+    combines them into a new 'solution' field with a specific format,
+    and writes the modified data to a new JSONL file.
 
-# 获取数据长度
-data_len = len(data)
+    Args:
+        input_file_path: Path to the input JSONL file.
+        output_file_path: Path to the output JSONL file.
+    """
+    processed_data = []
+    with open(input_file_path, "r", encoding="utf-8") as infile:
+        for i, line in enumerate(infile):
+            try:
+                item = json.loads(line.strip())
+                # Use pop to get the value and remove the key at the same time.
+                reasoning = item.pop("reasoning_cot_lingshu32b", None)
+                answer = item.pop("correct_answer", None)
 
-# 构造新文件名
-output_filename = f"pathcap_pair_{data_len}.json"
+                if reasoning is None or answer is None:
+                    print(
+                        f"Skipping line {i+1} due to missing 'reasoning_cot_lingshu32b' or 'correct_answer'."
+                    )
+                    continue
 
-# 输出目录
-output_dir = "/data/ljd/VLM-R1/dataset/"
+                # Construct the solution string
+                solution = (
+                    f"<think>{reasoning.strip()}</think>"
+                    f"<answer>{answer.strip()}</answer>"
+                )
+                item["solution"] = solution
+                processed_data.append(item)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON on line {i+1}: {e} | Line: {line.strip()}")
 
-# 确保输出目录存在
-os.makedirs(output_dir, exist_ok=True)
+    with open(output_file_path, "w", encoding="utf-8") as outfile:
+        for item in processed_data:
+            outfile.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-# 完整的输出路径
-output_path = os.path.join(output_dir, output_filename)
 
-# 保存数据
-with open(output_path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-
-print(f"文件已保存到: {output_path}")
+if __name__ == "__main__":
+    input_jsonl_path = "/data/ljd/VLM-R1/dataset/sft/pathgen_cot_26326.jsonl"
+    output_jsonl_path = "/data/ljd/VLM-R1/dataset/sft/pathgen_cot_26326_format.jsonl"
+    print(f"Processing '{input_jsonl_path}' and saving to '{output_jsonl_path}'...")
+    process_jsonl(input_jsonl_path, output_jsonl_path)
+    print("Processing complete.")
+    with open(output_jsonl_path, "r", encoding="utf-8") as f:
+        print("\n--- Content of output.jsonl ---")
+        for i, line in enumerate(f):
+            if i < 2:  # Print first 2 lines for verification
+                print(line.strip())
+        print("...")

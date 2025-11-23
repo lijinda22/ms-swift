@@ -5,11 +5,18 @@ from typing import Any, Dict, List, Literal, Optional
 
 from swift.llm import MODEL_MAPPING
 from swift.trainers import GRPOArgumentsMixin, RLHFArgumentsMixin
-from swift.utils import get_current_device, get_logger, is_master, is_mp, json_parse_to_dict, set_default_ddp_config
+from swift.utils import (
+    get_current_device,
+    get_logger,
+    is_master,
+    is_mp,
+    json_parse_to_dict,
+    set_default_ddp_config,
+)
 from .train_args import TrainArguments
 
 logger = get_logger()
-rlhf_support_vllm_types = ['grpo', 'gkd']
+rlhf_support_vllm_types = ["grpo", "gkd"]
 
 
 @dataclass
@@ -17,7 +24,9 @@ class RewardModelArguments:
     reward_model: Optional[List[str]] = None
     reward_adapters: List[str] = field(default_factory=list)
     reward_model_type: Optional[List[str]] = field(
-        default=None, metadata={'help': f'model_type choices: {list(MODEL_MAPPING.keys())}'})
+        default=None,
+        metadata={"help": f"model_type choices: {list(MODEL_MAPPING.keys())}"},
+    )
     reward_model_revision: Optional[List[str]] = None
 
 
@@ -26,15 +35,17 @@ class TeacherModelArguments:
     teacher_model: Optional[str] = None
     teacher_adapters: List[str] = field(default_factory=list)
     teacher_model_type: Optional[List[str]] = field(
-        default=None, metadata={'help': f'model_type choices: {list(MODEL_MAPPING.keys())}'})
+        default=None,
+        metadata={"help": f"model_type choices: {list(MODEL_MAPPING.keys())}"},
+    )
     teacher_model_revision: Optional[List[str]] = None
     teacher_deepspeed: Optional[str] = field(
         default=None,
         metadata={
-            'help':
-            'DeepSpeed configuration for teacher model. '
-            'Can be a path to a json file or one of: zero0, zero1, zero2, zero3, zero2_offload, zero3_offload'
-        })
+            "help": "DeepSpeed configuration for teacher model. "
+            "Can be a path to a json file or one of: zero0, zero1, zero2, zero3, zero2_offload, zero3_offload"
+        },
+    )
 
 
 @dataclass
@@ -65,12 +76,18 @@ class GRPOArguments(GRPOArgumentsMixin):
     # multi step
     num_iterations: int = 1
 
-    truncation_strategy: Literal['delete', 'left', 'right', None] = None
+    truncation_strategy: Literal["delete", "left", "right", None] = None
 
 
 @dataclass
-class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardModelArguments, RLHFArgumentsMixin,
-                    TrainArguments):
+class RLHFArguments(
+    TeacherModelArguments,
+    GRPOArguments,
+    PPOArguments,
+    RewardModelArguments,
+    RLHFArgumentsMixin,
+    TrainArguments,
+):
     """
     RLHFArguments is a dataclass that holds arguments specific to the Reinforcement
         Learning with Human Feedback (RLHF) training backend.
@@ -88,11 +105,16 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         desirable_weight (float): Weight for desirable outcomes in KTO. Default is 1.0.
         undesirable_weight (float): Weight for undesirable outcomes in KTO. Default is 1.0.
     """
-    rlhf_type: Literal['dpo', 'orpo', 'simpo', 'kto', 'cpo', 'rm', 'ppo', 'grpo', 'gkd'] = 'dpo'
+
+    rlhf_type: Literal[
+        "dpo", "orpo", "simpo", "kto", "cpo", "rm", "ppo", "grpo", "gkd"
+    ] = "dpo"
     ref_model: Optional[str] = None
     ref_adapters: List[str] = field(default_factory=list)
     ref_model_type: Optional[str] = field(
-        default=None, metadata={'help': f'model_type choices: {list(MODEL_MAPPING.keys())}'})
+        default=None,
+        metadata={"help": f"model_type choices: {list(MODEL_MAPPING.keys())}"},
+    )
     ref_model_revision: Optional[str] = None
 
     beta: Optional[float] = None
@@ -106,7 +128,7 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
     loss_type: Optional[List[str]] = None
     loss_weights: Optional[List[float]] = None
     # CPO
-    cpo_alpha: float = 1.
+    cpo_alpha: float = 1.0
     # SimPO
     simpo_gamma: float = 1
     # KTO
@@ -124,8 +146,8 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
     max_new_tokens: Optional[int] = None  # use max_completion_length instead
 
     def _prepare_training_args(self, training_args: Dict[str, Any]) -> None:
-        if self.rlhf_type == 'ppo':
-            training_args['world_size'] = self.global_world_size
+        if self.rlhf_type == "ppo":
+            training_args["world_size"] = self.global_world_size
 
     def __post_init__(self):
         self._process_loss_type()
@@ -145,28 +167,33 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         self._check_gkd()
 
         if self.loss_scale is None:
-            if self.rlhf_type == 'orpo' and not self.model_meta.is_multimodal:
+            if self.rlhf_type == "orpo" and not self.model_meta.is_multimodal:
                 # Avoid padding labels during the model's forward pass in multimodal models.
                 # Some multimodal models do not expand the image pad token.
-                self.loss_scale = 'default'
-            elif self.rlhf_type == 'grpo':
+                self.loss_scale = "default"
+            elif self.rlhf_type == "grpo":
                 if self.loss_scale is None:
                     if self.multi_turn_scheduler:
-                        self.loss_scale = 'default'
+                        self.loss_scale = "default"
                     else:
-                        self.loss_scale = 'last_round'
+                        self.loss_scale = "last_round"
             else:
-                self.loss_scale = 'last_round'
+                self.loss_scale = "last_round"
         if isinstance(self.ref_adapters, str):
             self.ref_adapters = [self.ref_adapters]
-        if self.rlhf_type == 'grpo' and self.beta == 0.0:
+        if self.rlhf_type == "grpo" and self.beta == 0.0:
             self.ref_model = None
-        elif self.rlhf_type in ['dpo', 'kto', 'ppo', 'grpo'] and self.train_type == 'full':
+        elif (
+            self.rlhf_type in ["dpo", "kto", "ppo", "grpo"]
+            and self.train_type == "full"
+        ):
             self.ref_model = self.ref_model or self.model
             self.ref_model_type = self.ref_model_type or self.model_type
             self.ref_model_revision = self.ref_model_revision or self.model_revision
         elif self.ref_model is not None:
-            raise ValueError('CPO/ORPO or LoRA training does not require a ref_model to be passed in.')
+            raise ValueError(
+                "CPO/ORPO or LoRA training does not require a ref_model to be passed in."
+            )
 
     def _process_loss_type(self):
         if self.loss_type is None:
@@ -175,184 +202,235 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         if isinstance(self.loss_type, list):
             num_loss_types = len(self.loss_type)
             if num_loss_types > 1:
-                assert self.rlhf_type == 'dpo', (f'Multiple loss types ({self.loss_type}) are only supported for DPO. '
-                                                 f'Current rlhf_type: {self.rlhf_type}.')
+                assert self.rlhf_type == "dpo", (
+                    f"Multiple loss types ({self.loss_type}) are only supported for DPO. "
+                    f"Current rlhf_type: {self.rlhf_type}."
+                )
                 from trl.trainer.dpo_config import DPOConfig
-                assert 'loss_weights' in DPOConfig.__dict__, (
-                    'Multiple loss types requires trl >= 0.20, please install trl `pip install -U trl`')
 
-        if hasattr(self.loss_type, '__len__') and len(self.loss_type) == 1:
+                assert (
+                    "loss_weights" in DPOConfig.__dict__
+                ), "Multiple loss types requires trl >= 0.20, please install trl `pip install -U trl`"
+
+        if hasattr(self.loss_type, "__len__") and len(self.loss_type) == 1:
             self.loss_type = self.loss_type[0]
 
         # Validate loss_type
         if self.loss_weights is not None:
-            assert self.rlhf_type == 'dpo'
-            loss_types = self.loss_type if isinstance(self.loss_type, list) else [self.loss_type]
+            assert self.rlhf_type == "dpo"
+            loss_types = (
+                self.loss_type if isinstance(self.loss_type, list) else [self.loss_type]
+            )
             if len(self.loss_weights) != len(loss_types):
-                raise ValueError(f'Length of loss_weights list ({self.loss_weights}) must match number of loss types '
-                                 f'({loss_types}).')
+                raise ValueError(
+                    f"Length of loss_weights list ({self.loss_weights}) must match number of loss types "
+                    f"({loss_types})."
+                )
 
     def _init_grpo(self):
-        if self.rlhf_type == 'grpo':
+        if self.rlhf_type == "grpo":
             if self.cached_dataset:
-                raise ValueError('cached_dataset is not supported for GRPO.')
+                raise ValueError("cached_dataset is not supported for GRPO.")
             if self.use_vllm:
                 set_default_ddp_config()
             if self.async_generate or not self.use_vllm:
                 self.sleep_level = 0
             self.remove_unused_columns = False
-            logger.info(f'Setting args.remove_unused_columns: {self.remove_unused_columns}')
+            logger.info(
+                f"Setting args.remove_unused_columns: {self.remove_unused_columns}"
+            )
             if self.truncation_strategy is None:
-                self.truncation_strategy = 'left'
-            assert self.truncation_strategy in ['left', 'delete'], (
+                self.truncation_strategy = "left"
+            assert self.truncation_strategy in ["left", "delete"], (
                 "GRPO requires `truncation_strategy 'left' or 'delete'`, "
-                f"Current value: `truncation_strategy='{self.truncation_strategy}'`.")  # noqa
+                f"Current value: `truncation_strategy='{self.truncation_strategy}'`."
+            )  # noqa
             if self.beta is None:
                 self.beta = 0.04  # https://arxiv.org/abs/2402.03300
             if self.async_generate:
-                logger.info('Using async mode. This is a approximate version which '
-                            'will use the old weights to generate responses to accelerate. '
-                            'This will ignore the `CLIP` of advantages, if you found the training '
-                            'is unstable, you may consider using --async_generate false.')
-            if 'soft_overlong' in self.reward_funcs:
-                assert self.soft_cache_length is not None, \
-                    'The soft_cache_length must be set when using soft overlong rewards.'
+                logger.info(
+                    "Using async mode. This is a approximate version which "
+                    "will use the old weights to generate responses to accelerate. "
+                    "This will ignore the `CLIP` of advantages, if you found the training "
+                    "is unstable, you may consider using --async_generate false."
+                )
+            if "soft_overlong" in self.reward_funcs:
+                assert (
+                    self.soft_cache_length is not None
+                ), "The soft_cache_length must be set when using soft overlong rewards."
                 if self.soft_max_length is None:
                     self.soft_max_length = self.max_completion_length
-                    logger.info(f'Auto-configured soft_max_length = max_completion_length {self.max_completion_length}')
+                    logger.info(
+                        f"Auto-configured soft_max_length = max_completion_length {self.max_completion_length}"
+                    )
 
     def _init_rollout(self):
         if self.rlhf_type not in rlhf_support_vllm_types:
             return
         if self.use_vllm:
             # set vllm mode
-            if self.vllm_server_host is not None or self.vllm_server_base_url is not None:
-                if self.vllm_mode != 'server':
-                    self.vllm_mode = 'server'
-                    logger.warning('set vllm_mode to `server` since vllm server host/base_url is provided')
+            if (
+                self.vllm_server_host is not None
+                or self.vllm_server_base_url is not None
+            ):
+                if self.vllm_mode != "server":
+                    self.vllm_mode = "server"
+                    logger.warning(
+                        "set vllm_mode to `server` since vllm server host/base_url is provided"
+                    )
             else:
-                if self.vllm_mode != 'colocate':
-                    self.vllm_mode = 'colocate'
-                    logger.warning('set vllm_mode to `colocate` since vllm_server_host is not provided')
+                if self.vllm_mode != "colocate":
+                    self.vllm_mode = "colocate"
+                    logger.warning(
+                        "set vllm_mode to `colocate` since vllm_server_host is not provided"
+                    )
         self._init_external_vllm()
 
-        if self.vllm_mode == 'server':
-            assert not self.use_vllm or self.vllm_server_host is not None or self.vllm_server_base_url is not None
+        if self.vllm_mode == "server":
+            assert (
+                not self.use_vllm
+                or self.vllm_server_host is not None
+                or self.vllm_server_base_url is not None
+            )
 
         if self.async_generate:
-            assert self.vllm_mode == 'server', 'async generate require vllm_mode == server, '
-            'please deploy vLLM server by `swift rollout` and assign with `vllm_server_host` '
-            'for more infomations, please check '
-            'https://swift.readthedocs.io/en/latest/Instruction/GRPO/getstarted/GRPO.html'
+            assert (
+                self.vllm_mode == "server"
+            ), "async generate require vllm_mode == server, "
+            "please deploy vLLM server by `swift rollout` and assign with `vllm_server_host` "
+            "for more infomations, please check "
+            "https://swift.readthedocs.io/en/latest/Instruction/GRPO/getstarted/GRPO.html"
 
         if not self.use_vllm and self.vllm_tensor_parallel_size != 1:
             self.vllm_tensor_parallel_size = 1
-            logger.warning('set vllm_tensor_parallel_size to 1 since use_vllm false')
+            logger.warning("set vllm_tensor_parallel_size to 1 since use_vllm false")
         self._external_vllm_warning()
 
     def _init_padding_side(self):
-        if self.rlhf_type in {'ppo', 'gkd'}:
-            self.padding_side = 'left'
+        if self.rlhf_type in {"ppo", "gkd"}:
+            self.padding_side = "left"
             # TODO: streaming, MLLM
 
     def _init_max_completion_length(self):
-        max_completion_length = self.response_length or self.max_new_tokens or self.max_completion_length
-        self.max_completion_length = self.max_new_tokens = self.response_length = max_completion_length
+        max_completion_length = (
+            self.response_length or self.max_new_tokens or self.max_completion_length
+        )
+        self.max_completion_length = self.max_new_tokens = self.response_length = (
+            max_completion_length
+        )
 
     def _init_metric_for_best_model(self):
-        if self.rlhf_type not in {'ppo', 'grpo'}:
+        if self.rlhf_type not in {"ppo", "grpo"}:
             super()._init_metric_for_best_model()
-        elif self.rlhf_type == 'grpo' and self.metric_for_best_model is None:
-            self.metric_for_best_model = 'reward'
+        elif self.rlhf_type == "grpo" and self.metric_for_best_model is None:
+            self.metric_for_best_model = "reward"
 
     def _init_simpo(self):
-        if self.rlhf_type != 'simpo':
+        if self.rlhf_type != "simpo":
             return
 
-        self.rlhf_type = 'cpo'
+        self.rlhf_type = "cpo"
         if self.loss_type is None:
-            self.loss_type = 'simpo'
+            self.loss_type = "simpo"
         if self.beta is None:
-            self.beta = 2.
+            self.beta = 2.0
 
     def _init_rm(self):
-        if self.rlhf_type == 'rm':
-            self.task_type = 'seq_cls'
+        if self.rlhf_type == "rm":
+            self.task_type = "seq_cls"
             self.num_labels = 1
 
     def _init_external_vllm(self):
-        if self.rlhf_type not in rlhf_support_vllm_types or (self.vllm_server_host is None
-                                                             and self.vllm_server_base_url is None):
+        if self.rlhf_type not in rlhf_support_vllm_types or (
+            self.vllm_server_host is None and self.vllm_server_base_url is None
+        ):
             return
         from swift.trainers.rlhf_trainer.vllm_client import VLLMClient
+
         if is_master():
-            logger.info('Start connecting to vLLM server')
+            logger.info("Start connecting to vLLM server")
             self.vllm_client = VLLMClient(
                 base_urls=self.vllm_server_base_url,
                 hosts=self.vllm_server_host,
                 server_ports=self.vllm_server_port,
-                connection_timeout=self.vllm_server_timeout)
+                connection_timeout=self.vllm_server_timeout,
+            )
             self.vllm_client.close_communicator()
             self.vllm_client.init_communicator(device=get_current_device())
-            logger.info('Connected to vLLM server')
+            logger.info("Connected to vLLM server")
 
     def _set_default(self):
         if self.beta is None:
-            if self.rlhf_type == 'gkd':
+            if self.rlhf_type == "gkd":
                 self.beta = 0.5
             else:
                 self.beta = 0.1
         if self.loss_type is None:
-            if self.rlhf_type in ['dpo', 'cpo']:
-                self.loss_type = 'sigmoid'  # else None
-            elif self.rlhf_type in ['kto']:
-                self.loss_type = 'kto'
-            elif self.rlhf_type == 'grpo':
-                self.loss_type = 'grpo'
+            if self.rlhf_type in ["dpo", "cpo"]:
+                self.loss_type = "sigmoid"  # else None
+            elif self.rlhf_type in ["kto"]:
+                self.loss_type = "kto"
+            elif self.rlhf_type == "grpo":
+                self.loss_type = "grpo"
         if self.gradient_accumulation_steps is None:
-            if self.rlhf_type == 'grpo':
+            if self.rlhf_type == "grpo":
                 self.gradient_accumulation_steps = 1
-                logger.info('Setting default gradient_accumulation_steps to 1 for GRPO.')
+                logger.info(
+                    "Setting default gradient_accumulation_steps to 1 for GRPO."
+                )
 
     def _check_grpo(self):
-        if self.rlhf_type != 'grpo':
+        if self.rlhf_type != "grpo":
             return
         from packaging import version
 
         import trl
+
         trl_version = version.parse(trl.__version__)
-        assert trl_version >= version.parse('0.17'), ('Your current version of `trl` is outdated. '
-                                                      'Please update it by running: pip install -U trl')
+        assert trl_version >= version.parse("0.17"), (
+            "Your current version of `trl` is outdated. "
+            "Please update it by running: pip install -U trl"
+        )
         if is_mp() and self.use_vllm:
-            raise ValueError('GRPO with vLLM is not compatible with `device_map`. '
-                             'Please set NPROC_PER_NODE equal to num_processes.')
+            raise ValueError(
+                "GRPO with vLLM is not compatible with `device_map`. "
+                "Please set NPROC_PER_NODE equal to num_processes."
+            )
         if self.use_liger_kernel:
-            assert trl_version >= version.parse('0.18')
+            assert trl_version >= version.parse("0.18")
             if self.delta is not None:
-                raise ValueError('Liger loss does not support two-sided GRPO loss yet.')
+                raise ValueError("Liger loss does not support two-sided GRPO loss yet.")
             if self.sequence_parallel_size > 1:
-                raise ValueError('Liger loss does not support sequence parallel yet.')
+                raise ValueError("Liger loss does not support sequence parallel yet.")
             if self.padding_free:
-                raise ValueError('Liger loss does not support padding free yet.')
+                raise ValueError("Liger loss does not support padding free yet.")
             if self.top_entropy_quantile < 1.0:
-                raise ValueError('Liger loss does not support entropy mask yet.')
+                raise ValueError("Liger loss does not support entropy mask yet.")
             if self.log_entropy:
-                raise ValueError('Liger loss does not support log entropy yet.')
-            if self.importance_sampling_level != 'token':
-                raise ValueError('Liger loss currently only support token-level importance sampling'
-                                 'Please set `importance_sampling_level` to `token`')
+                raise ValueError("Liger loss does not support log entropy yet.")
+            if self.importance_sampling_level != "token":
+                raise ValueError(
+                    "Liger loss currently only support token-level importance sampling"
+                    "Please set `importance_sampling_level` to `token`"
+                )
             from trl.import_utils import is_liger_kernel_available
-            assert is_liger_kernel_available(), (
-                'Please install/update liger-kernel by running: pip install -U liger-kernel')
+
+            assert (
+                is_liger_kernel_available()
+            ), "Please install/update liger-kernel by running: pip install -U liger-kernel"
 
         if self.async_generate and self.multi_turn_scheduler is not None:
-            raise NotImplementedError('Currently, async_generate is not supported with multi-turn functionality.')
+            raise NotImplementedError(
+                "Currently, async_generate is not supported with multi-turn functionality."
+            )
 
         if self.generation_batch_size or self.steps_per_generation:
             from trl.trainer.grpo_config import GRPOConfig
-            assert 'generation_batch_size' in GRPOConfig.__dict__, (
-                'generation_batch_size or steps_per_generation needs trl >= 0.18, '
-                'please install trl `pip install trl>=0.18')
+
+            assert "generation_batch_size" in GRPOConfig.__dict__, (
+                "generation_batch_size or steps_per_generation needs trl >= 0.18, "
+                "please install trl `pip install trl>=0.18"
+            )
 
     def _external_vllm_warning(self):
         if self.rlhf_type not in rlhf_support_vllm_types or not self.vllm_server_host:
@@ -361,25 +439,29 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         if self.vllm_max_model_len is not None:
             logger.warning(
                 "Configuration conflict: 'vllm_max_model_len=%s' is ignored for external vLLM. "
-                'Please specify it when launching the inference service: '
-                '`swift rollout --vllm_max_model_len <value>`', self.vllm_max_model_len)
+                "Please specify it when launching the inference service: "
+                "`swift rollout --vllm_max_model_len <value>`",
+                self.vllm_max_model_len,
+            )
 
     def _check_padding_free(self):
         super()._check_padding_free()
         if self.padding_free or self.packing:
-            supported_types = ['grpo', 'dpo', 'kto', 'gkd']
+            supported_types = ["grpo", "dpo", "kto", "gkd"]
             if self.rlhf_type not in supported_types:
                 raise NotImplementedError(
                     f"The current rlhf_type '{self.rlhf_type}' does not support padding_free/packing. "
-                    'Please set --padding_free/packing to false.')
+                    "Please set --padding_free/packing to false."
+                )
 
     def _check_sequence_parallel(self):
         if self.sequence_parallel_size > 1:
-            supported_types = ['grpo', 'dpo']
+            supported_types = ["grpo", "dpo"]
             if self.rlhf_type not in supported_types:
                 raise NotImplementedError(
                     f"The current rlhf_type '{self.rlhf_type}' does not support sequence_parallel. "
-                    'Please set --sequence_parallel_size to 1.')
+                    "Please set --sequence_parallel_size to 1."
+                )
 
     def _init_teacher_deepspeed(self):
         """Initialize teacher_deepspeed configuration similar to _init_deepspeed in TrainArguments"""
@@ -387,10 +469,19 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
             return
 
         # Get the same ds_config_folder as main model
-        ds_config_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ds_config'))
+        ds_config_folder = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "ds_config")
+        )
         deepspeed_mapping = {
-            name: f'{name}.json'
-            for name in ['zero0', 'zero1', 'zero2', 'zero3', 'zero2_offload', 'zero3_offload']
+            name: f"{name}.json"
+            for name in [
+                "zero0",
+                "zero1",
+                "zero2",
+                "zero3",
+                "zero2_offload",
+                "zero3_offload",
+            ]
         }
 
         # Check if teacher_deepspeed is a predefined name
@@ -401,17 +492,23 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
 
         # Parse the config file to dict
         self.teacher_deepspeed = json_parse_to_dict(self.teacher_deepspeed)
-        logger.info(f'Using teacher_deepspeed config: {self.teacher_deepspeed}')
+        logger.info(f"Using teacher_deepspeed config: {self.teacher_deepspeed}")
 
     def _check_gkd(self):
-        if self.rlhf_type != 'gkd':
+        if self.rlhf_type != "gkd":
             return
         if is_mp() and self.use_vllm:
-            raise ValueError('GKD with vLLM is not compatible with `device_map`. '
-                             'Please set NPROC_PER_NODE equal to num_processes.')
+            raise ValueError(
+                "GKD with vLLM is not compatible with `device_map`. "
+                "Please set NPROC_PER_NODE equal to num_processes."
+            )
 
         if self.multi_turn_scheduler is not None:
-            raise NotImplementedError('Currently, multi_turn_scheduler is not supported for GKD.')
+            raise NotImplementedError(
+                "Currently, multi_turn_scheduler is not supported for GKD."
+            )
 
         if self.async_generate:
-            raise NotImplementedError('Currently, async_generate is not supported for GKD.')
+            raise NotImplementedError(
+                "Currently, async_generate is not supported for GKD."
+            )

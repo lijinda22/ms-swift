@@ -1,6 +1,6 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from transformers import Seq2SeqTrainingArguments
@@ -150,6 +150,37 @@ class TrainArguments(
 
     # early_step
     early_stop_interval: Optional[int] = None
+
+    # --- Knowledge Distillation (KD) Arguments ---
+    kd_teacher_model_type: Optional[str] = field(
+        default=None,
+        metadata={"help": 'Type of the teacher model for ViT KD (e.g., "conchv1_5")'},
+    )
+    kd_teacher_model_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the pretrained weights of the teacher model"},
+    )
+    kd_loss_weight: float = field(
+        default=0.05,
+        metadata={"help": "Weight for the knowledge distillation loss (w * KD_Loss)"},
+    )
+    kd_projection_dim: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Projection dimension for CLS token alignment. Defaults to student ViT hidden size."
+        },
+    )
+    kd_student_T: float = field(
+        default=0.1, metadata={"help": "Temperature for student CLS token in DINO loss"}
+    )
+    kd_teacher_T: float = field(
+        default=0.05,
+        metadata={"help": "Temperature for teacher CLS token in DINO loss"},
+    )
+    kd_center_momentum: float = field(
+        default=0.9, metadata={"help": "Momentum for DINO loss center update"}
+    )
+    # -------------------------------------------------
 
     def _check_padding_free(self):
         if self.padding_free or self.packing:

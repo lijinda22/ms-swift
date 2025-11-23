@@ -15,7 +15,9 @@ from transformers import Seq2SeqTrainer as HfSeq2SeqTrainer
 from transformers import Trainer as HfTrainer
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 from transformers.utils import is_peft_available
-
+import torch.nn.functional as F
+from conchv1_5 import create_model_from_pretrained
+from PIL import Image
 from swift.utils import (
     JsonlWriter,
     Serializer,
@@ -30,11 +32,13 @@ from .utils import per_token_loss_func, per_token_loss_func_sp
 logger = get_logger()
 
 
+# 基础训练器类，继承自HuggingFace Trainer
 class Trainer(SwiftMixin, DataLoaderMixin, HfTrainer):
     args: TrainingArguments
 
     @contextmanager
     def _patch_loss_function(self):
+        # 修补损失函数以适配设备映射
         model = self.model
         if isinstance(model, PeftModel):
             model = model.model
@@ -59,12 +63,14 @@ class Trainer(SwiftMixin, DataLoaderMixin, HfTrainer):
             model_cls.loss_function = _old_loss_function
 
     def train(self, *args, **kwargs):
+        # 训练模型主函数
         with self._patch_loss_function():
             return super().train(*args, **kwargs)
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
+        # 计算模型损失值
         loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
         if inputs.get("labels") is not None:
             self._compute_acc(outputs, inputs["labels"])
@@ -74,6 +80,7 @@ class Trainer(SwiftMixin, DataLoaderMixin, HfTrainer):
 
 
 def gather_for_unpadded_tensors(input_data, use_gather_object=False):
+    # 收集未填充的张量数据用于评估
     from accelerate.utils import gather_object
 
     input_data = gather_object(input_data)
@@ -90,6 +97,7 @@ def gather_for_unpadded_tensors(input_data, use_gather_object=False):
     return data
 
 
+# 嵌入模型专用训练器
 class EmbeddingTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
@@ -100,11 +108,13 @@ class EmbeddingTrainer(Trainer):
         self.gather_function = gather_for_unpadded_tensors
 
     def evaluation_loop(self, *args, **kwargs):
+        # 评估循环
         output = super().evaluation_loop(*args, **kwargs)
         self.gather_function = gather_for_unpadded_tensors
         return output
 
     def calculate_metric(self, eval_prediction: EvalPrediction) -> Dict[str, float]:
+        # 计算嵌入模型评估指标
         from swift.plugin.loss import (
             calculate_paired_metrics,
             calculate_infonce_metrics,
@@ -121,6 +131,7 @@ class EmbeddingTrainer(Trainer):
             )
 
 
+# 重排序模型专用训练器
 class RerankerTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
@@ -128,7 +139,7 @@ class RerankerTrainer(Trainer):
         self.compute_metrics = self.calculate_metric
         self.label_names = ["labels"]
 
-        # Set up preprocess_logits_for_metrics to reduce memory usage for generative reranker
+        # 为生成式重排序器设置日志预处理以减少内存使用
         if self.args.loss_type in {
             "generative_reranker",
             "listwise_generative_reranker",
@@ -141,43 +152,39 @@ class RerankerTrainer(Trainer):
         self.gather_function = gather_for_unpadded_tensors
 
     def _preprocess_generative_reranker_logits(self, logits, labels):
-        """
-        Preprocess logits for generative reranker to reduce memory usage.
-        Extract only the yes/no token logits at the last valid (non -100) timestep
-        for each sample, avoiding padded timesteps created by multi-GPU gather.
-        """
+        # 预处理生成式重排序器的日志，仅提取必要部分以节省内存
         import torch
         import os
 
-        # Get token IDs for positive and negative tokens
+        # 获取正负标记的token ID
         positive_token = os.environ.get("GENERATIVE_RERANKER_POSITIVE_TOKEN", "yes")
         negative_token = os.environ.get("GENERATIVE_RERANKER_NEGATIVE_TOKEN", "no")
 
         tokenizer = getattr(self, "processing_class", None)
         if tokenizer is None:
-            # Fallback: return full logits if tokenizer not available
+            # 回退：如果无法获取tokenizer则返回完整logits
             return logits
 
         try:
             positive_token_id = tokenizer.convert_tokens_to_ids(positive_token)
             negative_token_id = tokenizer.convert_tokens_to_ids(negative_token)
         except Exception:
-            # Fallback: return full logits if token conversion fails
+            # 回退：如果token转换失败则返回完整logits
             return logits
 
-        # Extract only the yes/no token logits from the last non -100 position per sample
-        # Shapes: logits [batch, seq_len, vocab]
+        # 从每个样本的最后一个有效位置提取正/负token的日志
+        # 形状: logits [batch, seq_len, vocab]
         if len(logits.shape) == 3:
             batch_size, _, vocab_size = logits.shape
 
-            # Identify padded rows whose entire vocab logits are -100
+            # 识别填充行（整个词汇表日志都是-100）
             row_is_pad = (logits == -100).all(dim=-1)  # [batch, seq_len]
             valid_mask = ~row_is_pad
             lengths = valid_mask.long().sum(dim=1) - 1
             lengths = torch.clamp(lengths, min=0)
             last_indices = lengths.to(device=logits.device)
 
-            # Gather the logits at the last valid index for each sample: [batch, vocab]
+            # 收集每个样本最后一个有效索引处的日志: [batch, vocab]
             gather_index = last_indices.view(batch_size, 1, 1).expand(
                 batch_size, 1, vocab_size
             )
@@ -190,15 +197,17 @@ class RerankerTrainer(Trainer):
             logits = positive_logits - negative_logits
             return logits
         else:
-            # Unexpected shape, return as-is
+            # 意外形状，按原样返回
             return logits
 
     def evaluation_loop(self, *args, **kwargs):
+        # 评估循环
         output = super().evaluation_loop(*args, **kwargs)
         self.gather_function = gather_for_unpadded_tensors
         return output
 
     def calculate_metric(self, eval_prediction: EvalPrediction) -> Dict[str, float]:
+        # 计算重排序模型评估指标
         from swift.plugin.loss import calculate_reranker_metrics
 
         return calculate_reranker_metrics(
@@ -208,9 +217,10 @@ class RerankerTrainer(Trainer):
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
-        # Check if we have a custom loss function
+        # 计算重排序模型损失值
+        # 检查是否有自定义损失函数
         if self.compute_loss_func is not None:
-            # Get labels and compute outputs
+            # 获取标签并计算输出
             labels = inputs.get("labels")
             if labels is not None:
                 labels = inputs.pop("labels")
@@ -218,12 +228,12 @@ class RerankerTrainer(Trainer):
             outputs = model(**inputs)
 
             if labels is not None:
-                # Call custom loss function
+                # 调用自定义损失函数
                 loss = self.compute_loss_func(
                     outputs, labels, num_items_in_batch=num_items_in_batch, trainer=self
                 )
             else:
-                # Fallback to model's loss
+                # 回退到模型的损失计算
                 loss = outputs.loss
 
             if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
@@ -239,6 +249,7 @@ class RerankerTrainer(Trainer):
             )
 
 
+# 序列到序列模型训练器
 class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
     args: Seq2SeqTrainingArguments
 
@@ -259,10 +270,12 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
 
     @staticmethod
     def _predict_data_collator(batch):
+        # 预测数据整理器
         return {"_data": batch}
 
     @contextmanager
     def _patch_predict_with_generate(self):
+        # 修补预测时的生成过程
         origin_data_collator = self.data_collator
         self.data_collator = self._predict_data_collator
         packing = self.template.packing
@@ -277,6 +290,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
             self.data_collator = origin_data_collator
 
     def evaluate(self, *args, **kwargs):
+        # 模型评估
         context = (
             self._patch_predict_with_generate()
             if self.args.predict_with_generate
@@ -295,6 +309,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         ignore_keys: Optional[List[str]] = None,
         **gen_kwargs,
     ) -> Tuple[Optional[float], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        # 预测步骤
         if not self.args.predict_with_generate or prediction_loss_only:
             with self.template.forward_context(self.model, inputs):
                 return super().prediction_step(
@@ -339,6 +354,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         return None, response_list, labels_list
 
     def _prepare_inputs(self, inputs):
+        # 准备输入数据
         from swift.llm import HfConfigFactory
 
         args = self.args
@@ -377,6 +393,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
+        # 计算序列到序列模型损失值
         labels = None
         compute_loss_func: Callable = inputs.pop("compute_loss_func", None)
         loss_scale = inputs.pop("loss_scale", None)
@@ -403,15 +420,15 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         if getattr(outputs, "aux_loss", None) is not None:
             mode = "train" if self.model.training else "eval"
             self.custom_metrics[mode]["aux_loss"].update(outputs.aux_loss)
-        # Save past state if it exists
-        # TODO: this needs to be fixed and made cleaner later.
+        # 保存过去状态（如果存在）
+        # TODO: 这需要修复并稍后清理
         if self.args.past_index >= 0:
             self._past = outputs[self.args.past_index]
 
         if labels is None:
             labels = inputs["labels"]
             outputs.loss = outputs.loss.to(labels.device)
-            # fix https://github.com/huggingface/transformers/issues/34263
+            # 修复 https://github.com/huggingface/transformers/issues/34263
             if num_items_in_batch is not None:
                 outputs.loss = outputs.loss * (
                     (labels[:, 1:] != -100).sum() / num_items_in_batch
@@ -422,7 +439,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
                     "The model did not return a loss from the inputs, only the following keys: "
                     f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
                 )
-            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            # 我们不在此处使用.loss，因为模型可能返回元组而不是ModelOutput
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
         else:
             outputs.loss = None
@@ -469,13 +486,13 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
                 model_name = unwrapped_model.model._get_name()
             else:
                 model_name = unwrapped_model._get_name()
-            # User-defined compute_loss function
+            # 用户自定义的compute_loss函数
             if compute_loss_func is not None:
                 loss = compute_loss_func(
                     outputs, labels, num_items_in_batch=num_items_in_batch, trainer=self
                 )
             elif self.label_smoother is None:
-                # Handle the outputs.loss generated by loss_scale.
+                # 处理由loss_scale生成的outputs.loss
                 if num_items_in_batch is None:
                     num_items_in_batch = (labels[:, 1:] != -100).sum()
                 loss = outputs.loss.sum() / num_items_in_batch
@@ -511,11 +528,290 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
             and labels is not None
             and self.args.tuner_backend != "unsloth"
         ):
-            # Liger does not have logits
-            # Unsloth has a bug with output logits
+            # Liger没有logits
+            # Unsloth在输出logits方面有bug
             self._compute_acc(outputs, labels)
         return (loss, outputs) if return_outputs else loss
 
     def training_step(self, model, inputs, *args, **kwargs):
+        # 训练步骤
         with self.template.forward_context(self.model, inputs):
             return super().training_step(model, inputs, *args, **kwargs)
+
+
+# SFT + ViT知识蒸馏训练器
+class KnowledgeDistillationModule(nn.Module):
+    """A module to hold all components for Knowledge Distillation."""
+
+    def __init__(
+        self, student_hidden_size: int, teacher_hidden_size: int, projection_dim: int
+    ):
+        super().__init__()
+        self.student_projection = nn.Linear(student_hidden_size, projection_dim)
+        self.teacher_projection = nn.Linear(teacher_hidden_size, projection_dim)
+
+        # Explicitly initialize weights and biases
+        # This ensures deterministic initialization and addresses concerns about all-zero weights.
+        for layer in [self.student_projection, self.teacher_projection]:
+            torch.nn.init.kaiming_normal_(
+                layer.weight, mode="fan_in", nonlinearity="relu"
+            )
+            if layer.bias is not None:
+                torch.nn.init.zeros_(layer.bias)
+
+        # Freeze teacher projection
+        self.teacher_projection.requires_grad_(False)
+        self.register_buffer("center", torch.zeros(1, projection_dim))
+
+
+class SftKdTrainer(Seq2SeqTrainer):
+    """
+    Trainer for SFT + ViT Knowledge Distillation.
+    Inherits from Seq2SeqTrainer.
+    """
+
+    def __init__(
+        self,
+        *args,
+        sft_args: "TrainArguments",
+        teacher_model: nn.Module,
+        teacher_transform: Callable,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.sft_args = sft_args
+        self.teacher_model = teacher_model.eval()
+        self.teacher_transform = teacher_transform
+        self.kd_loss_weight = sft_args.kd_loss_weight
+        self.student_T = sft_args.kd_student_T
+        self.teacher_T = sft_args.kd_teacher_T
+        self.center_momentum = sft_args.kd_center_momentum
+        self.student_cls_token_buffer = None
+        self.kd_module: Optional[KnowledgeDistillationModule] = None
+        self.original_data_collator = self.data_collator
+        self.data_collator = self._kd_data_collator
+        self._init_kd_components()
+
+    def create_optimizer(self):
+        """
+        Override to add the parameters of the KD student projection layer to the optimizer.
+        """
+        optimizer = super().create_optimizer()
+        # if hasattr(self, "kd_module") and self.kd_module is not None:
+        #     optimizer.add_param_group(
+        #         {"params": self.kd_module.student_projection.parameters()}
+        #     )
+        #     logger.info("Added KD student projection parameters to the optimizer.")
+        return optimizer
+
+    def _kd_data_collator(
+        self, batch: List[Dict[str, Any]], **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Wraps the original data collator to extract PIL images
+        and prepare teacher_pixel_values.
+        """
+        pil_images_for_teacher = []
+
+        # When packing is enabled, the batch is a list of lists of dictionaries.
+        # We need to flatten it to iterate over each sample.
+        iterable_batch = batch
+        if hasattr(self, "template") and self.template.packing:
+            iterable_batch = [item for sublist in batch for item in sublist]
+
+        for d in iterable_batch:
+            logger.info(f"Processing sample {d.keys()}")
+            # logger.info(f"Processing sample", d["pixel_values"].size())
+            # raise NotImplementedError("SFT + ViT Knowledge Distillation not supported")
+            pil_img = None
+            image_data = d.get("images")
+            if image_data and isinstance(image_data, list) and len(image_data) > 0:
+                image_item = image_data[0]
+                if isinstance(image_item, str):
+                    try:
+                        pil_img = Image.open(image_item).convert("RGB")
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not load image from path: {image_item}. Error: {e}"
+                        )
+                elif hasattr(image_item, "convert"):  # Is a PIL Image
+                    pil_img = image_item.convert("RGB")
+            pil_images_for_teacher.append(pil_img)
+
+        # The original collator knows how to handle the packed (or unpacked) batch.
+        student_inputs = self.original_data_collator(batch, **kwargs)
+        teacher_pixel_values_list = []
+        valid_image_indices = []
+        for i, pil_img in enumerate(pil_images_for_teacher):
+            assert pil_img, "No image provided for teacher"
+            try:
+                teacher_pixel_values_list.append(self.teacher_transform(pil_img))
+                valid_image_indices.append(i)
+            except Exception as e:
+                logger.warning(f"Failed to transform image {i} for teacher: {e}")
+        if teacher_pixel_values_list:
+            teacher_pixel_values = torch.stack(teacher_pixel_values_list)
+            student_inputs["teacher_pixel_values"] = teacher_pixel_values
+            student_inputs["teacher_image_indices"] = torch.tensor(
+                valid_image_indices, dtype=torch.long
+            )
+        return student_inputs
+
+    def _student_hook(self, module, input, output):
+        """
+        Forward hook to capture the student ViT's global representation.
+        Handles various output formats (tensor, tuple, object).
+        Qwen3-VL does not have a traditional [CLS] token, so we use the
+        representation of the first token from the final visual output as a proxy.
+        """
+        hidden_states = None
+        if hasattr(output, "last_hidden_state"):
+            # For BaseModelOutputWithPooling or similar structures
+            hidden_states = output.last_hidden_state
+        elif isinstance(output, torch.Tensor):
+            # If the output is just the hidden states tensor
+            hidden_states = output
+        elif isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor):
+            # If the output is a tuple and the first element is the hidden_states
+            hidden_states = output[0]
+        if hidden_states is not None:
+            # Use the first token's representation as a proxy for the global/CLS token.
+            if hidden_states.ndim == 3:
+                self.student_cls_token_buffer = hidden_states[:, 0, :]
+            elif hidden_states.ndim == 2:
+                self.student_cls_token_buffer = hidden_states
+            else:
+                logger.warning_once(
+                    f"Student ViT hook received hidden_states with unexpected dimension {hidden_states.ndim}. "
+                    f"Cannot capture token for KD."
+                )
+        else:
+            logger.warning_once(
+                f"Student ViT hook could not extract hidden_states from output of type {type(output)}. "
+                f"Cannot capture token for KD."
+            )
+
+    def _init_kd_components(self):
+        # 初始化知识蒸馏组件
+        try:
+            # For Qwen3-VL, the visual module is at model.model.visual
+            student_vit_module = self.model.model.visual
+            # The output dimension of the visual part is the input to the LM.
+            # We can get this from the visual merger's output features.
+            student_hidden_size = student_vit_module.merger.linear_fc2.out_features
+            student_vit_module.register_forward_hook(self._student_hook)
+            logger.info(
+                f"Registered forward hook on student ViT module: {student_vit_module.__class__.__name__}"
+            )
+        except AttributeError as e:
+            logger.error(
+                f"Failed to find student ViT (model.model.visual) or its components. KD is disabled. Error: {e}"
+            )
+            self.kd_loss_weight = 0.0
+            return
+        try:
+            teacher_hidden_size = self.teacher_model.trunk.embed_dim
+        except AttributeError as e:
+            logger.error(
+                f"Failed to get teacher ViT hidden size (teacher_model.trunk.embed_dim). KD is disabled. Error: {e}"
+            )
+            self.kd_loss_weight = 0.0
+            return
+        projection_dim = self.sft_args.kd_projection_dim
+        if projection_dim is None:
+            projection_dim = student_hidden_size
+            logger.info(
+                f"kd_projection_dim not set. Defaulting to student ViT hidden size: {projection_dim}"
+            )
+
+        self.kd_module = KnowledgeDistillationModule(
+            student_hidden_size=student_hidden_size,
+            teacher_hidden_size=teacher_hidden_size,
+            projection_dim=projection_dim,
+        ).to(self.model.device)
+
+        logger.info("Initialized Knowledge Distillation Components.")
+        logger.info(f"  Student ViT CLS: {student_hidden_size} -> {projection_dim}")
+        logger.info(
+            f"  Teacher ViT CLS: {teacher_hidden_size} -> {projection_dim} (Frozen)"
+        )
+
+    def _dino_loss(self, student_output, teacher_output):
+        # DINO损失计算
+        student_out = F.softmax(student_output / self.student_T, dim=-1)
+        teacher_out = (teacher_output - self.kd_module.center) / self.teacher_T
+        teacher_out = F.softmax(teacher_out, dim=-1).detach()
+        kd_loss = -(teacher_out * torch.log(student_out + 1e-9)).sum(dim=-1).mean()
+        if self.training:
+            with torch.no_grad():
+                batch_center = teacher_output.mean(dim=0, keepdim=True)
+                self.kd_module.center = (
+                    self.kd_module.center * self.center_momentum
+                    + batch_center * (1 - self.center_momentum)
+                )
+        return kd_loss
+
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        # 计算带知识蒸馏的损失值
+        teacher_pixel_values = inputs.pop("teacher_pixel_values", None)
+        teacher_image_indices = inputs.pop("teacher_image_indices", None)
+        self.student_cls_token_buffer = None
+        sft_loss_outputs = super().compute_loss(
+            model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
+        )
+        sft_loss = sft_loss_outputs[0]
+        if (
+            self.kd_loss_weight == 0.0
+            or self.kd_module is None
+            or teacher_pixel_values is None
+            or self.student_cls_token_buffer is None
+        ):
+            if self.kd_loss_weight > 0.0 and teacher_pixel_values is None:
+                logger.warning_once(
+                    "No valid teacher images in batch. Skipping KD loss."
+                )
+            if self.kd_loss_weight > 0.0 and self.student_cls_token_buffer is None:
+                logger.warning_once(
+                    "Student ViT hook did not run (no images in batch?). Skipping KD loss."
+                )
+            return sft_loss_outputs if return_outputs else sft_loss
+        try:
+            student_cls_tokens_all = self.student_cls_token_buffer.clone()
+            student_cls_for_kd = student_cls_tokens_all[
+                teacher_image_indices.to(student_cls_tokens_all.device)
+            ]
+            if student_cls_for_kd.shape[0] == 0:
+                raise ValueError("No matching student samples for KD.")
+            with torch.no_grad():
+                teacher_features = self.teacher_model.trunk.forward_features(
+                    teacher_pixel_values.to(self.model.device)
+                )
+                teacher_cls_for_kd = teacher_features[:, 0, :]
+            assert student_cls_for_kd.shape[0] == teacher_cls_for_kd.shape[0]
+            student_projected = self.kd_module.student_projection(student_cls_for_kd)
+            teacher_projected = self.kd_module.teacher_projection(teacher_cls_for_kd)
+            kd_loss = self._dino_loss(student_projected, teacher_projected)
+            total_loss = sft_loss + self.kd_loss_weight * kd_loss
+            if (
+                self.is_world_process_zero()
+                and self.state.global_step > 0
+                and self.state.global_step % self.args.logging_steps == 0
+            ):
+                self.log(
+                    {
+                        "loss/sft_loss": sft_loss.item(),
+                        "loss/kd_loss": kd_loss.item(),
+                        "loss/total_loss": total_loss.item(),
+                    }
+                )
+        except Exception as e:
+            logger.error(
+                f"Error calculating KD loss: {e}. Skipping KD loss for this step."
+            )
+            total_loss = sft_loss
+        if return_outputs:
+            return (total_loss,) + sft_loss_outputs[1:]
+        else:
+            return total_loss

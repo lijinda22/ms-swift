@@ -8,7 +8,8 @@ from datasets import load_from_disk
 
 from swift.llm.dataset.loader import DatasetLoader
 from swift.plugin import extra_callbacks
-from swift.trainers import TrainerFactory
+from swift.trainers import TrainerFactory, Seq2SeqTrainer
+from conchv1_5 import create_model_from_pretrained
 from swift.utils import (
     append_to_jsonl,
     get_logger,
@@ -40,6 +41,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
     def __init__(self, args: Optional[Union[List[str], TrainArguments]] = None) -> None:
         super().__init__(args)
         self.train_msg = {}
+        self.teacher_model = None
+        self.teacher_transform = None
         self._prepare_model_tokenizer()
         self._prepare_template()
         self._prepare_callbacks()
@@ -79,6 +82,19 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         logger.info(f"model_info: {self.model.model_info}")
 
         self._prepare_generation_config()
+
+        if getattr(args, "kd_teacher_model_type", None):
+            assert (
+                args.kd_teacher_model_type == "conchv1_5" and args.kd_teacher_model_path
+            )
+            logger.info(
+                f"Loading KD teacher model: {args.kd_teacher_model_type} from {args.kd_teacher_model_path}"
+            )
+            self.teacher_model, self.teacher_transform = create_model_from_pretrained(
+                checkpoint_path=args.kd_teacher_model_path
+            )
+            self.teacher_model = self.teacher_model.to(self.model.device).eval()
+            self.teacher_model.requires_grad_(False)
 
     def _prepare_template(self) -> None:
         args = self.args
@@ -240,6 +256,17 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         logger.info(f"model_parameter_info: {model_parameter_info}")
 
         trainer_cls = TrainerFactory.get_trainer_cls(args)
+        if self.teacher_model is not None:
+            from swift.trainers.trainers import SftKdTrainer
+
+            if trainer_cls is not Seq2SeqTrainer:
+                logger.warning(
+                    f"KD is enabled, but default trainer is {trainer_cls}, not Seq2SeqTrainer. "
+                    f"Will use SftKdTrainer, but this might indicate an unexpected setup."
+                )
+            trainer_cls = SftKdTrainer
+            logger.info("Using SftKdTrainer for ViT Knowledge Distillation.")
+
         trainer = trainer_cls(
             model=self.model,
             args=self.args.training_args,
@@ -253,7 +280,12 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         return self.train(trainer)
 
     def _get_trainer_kwargs(self):
-        return {}
+        kwargs = {}
+        if self.teacher_model is not None:
+            kwargs["sft_args"] = self.args
+            kwargs["teacher_model"] = self.teacher_model
+            kwargs["teacher_transform"] = self.teacher_transform
+        return kwargs
 
     def _save_trainer_state(self, trainer):
         training_args = trainer.args
