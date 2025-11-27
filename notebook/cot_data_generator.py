@@ -10,20 +10,17 @@ import math
 from qwen_vl_utils import process_vision_info
 import numpy as np
 
-MODEL_PATH = "/data/ckpt/Lingshu-7B"
+MODEL_PATH = "/data/ckpt/Lingshu-32B"
 TENSOR_PARALLEL_SIZE = 2
 GPU_MEMORY_UTILIZATION = 0.9
-MAX_IMAGES_PER_PROMPT = 4
+MAX_IMAGES_PER_PROMPT = 1
 
-MCQ_INPUT_FILE = (
-    "/data/ljd/VLM-R1/dataset/sft/pathgen_instruct_close_single_turn2synthesis.json"
-)
-COT_OUTPUT_FILE = "/data/ljd/VLM-R1/dataset/sft/pathgen_cot.jsonl"
+MCQ_INPUT_FILE = "/data/ljd/VLM-R1/dataset/sft/pathgen_instruct_close_137555.json"
 
 BATCH_SIZE = 32
 SAMPLING_TEMP_COT = 0.2
 SAMPLING_TOP_P_COT = 0.9
-MAX_TOKENS_COT = 1024
+MAX_TOKENS_COT = 512
 
 print("Initializing processor...")
 processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
@@ -58,26 +55,38 @@ def get_processed_indices(output_filepath):
     return processed_indices
 
 
-def generate_cot_data(input_filepath, output_filepath, batch_size, llm):
+def generate_cot_data(data_to_process, output_filepath, batch_size, llm):
     print(f"\n--- Starting CoT Data Generation ---")
-    print(f"Input file: {input_filepath}")
+    print(f"Processing up to {len(data_to_process)} samples for CoT generation.")
     print(f"Output file: {output_filepath}")
 
-    all_mcq_data = []
-    print("Loading MCQ data...")
-    try:
-        with open(input_filepath, "r", encoding="utf-8") as f:
-            all_mcq_data = json.load(f)
-        print(f"Loaded {len(all_mcq_data)} total MCQ samples.")
-    except FileNotFoundError:
-        print(f"Error: Input file not found at {input_filepath}")
-        return
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return
+    # --- IMPROVEMENT 1: Robust resumption ---
+    # Check for already processed samples in the output file to avoid duplicates
+    if os.path.exists(output_filepath):
+        processed_image_paths = set()
+        with open(output_filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    # Use image_path as a unique identifier for processed samples
+                    processed_image_paths.add(json.loads(line)["image_path"])
+                except (json.JSONDecodeError, KeyError):
+                    # Skip malformed lines in the output file
+                    continue
 
-    data_to_process = all_mcq_data
-    print(f"Processing all {len(data_to_process)} MCQ samples for CoT generation.")
+        if processed_image_paths:
+            original_count = len(data_to_process)
+            # Filter out samples that have already been processed
+            data_to_process = [
+                item
+                for item in data_to_process
+                if item.get("image") not in processed_image_paths
+            ]
+            print(
+                f"Resuming generation: {len(processed_image_paths)} samples already found in output file."
+            )
+            print(
+                f"Filtered out processed samples. Remaining samples to generate: {len(data_to_process)}"
+            )
 
     sampling_params = SamplingParams(
         temperature=SAMPLING_TEMP_COT,
@@ -87,16 +96,9 @@ def generate_cot_data(input_filepath, output_filepath, batch_size, llm):
 
     print(f"Starting inference with batch_size {batch_size}...")
 
-    start_index = 0
-    if os.path.exists(output_filepath):
-        with open(output_filepath, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            if lines:
-                start_index = len(lines) * batch_size
-                print(f"Resuming from index {start_index}")
-
     with open(output_filepath, "a", encoding="utf-8") as outfile:
-        for i in tqdm(range(start_index, len(data_to_process), batch_size)):
+        # Loop from the beginning of the (potentially filtered) data
+        for i in tqdm(range(0, len(data_to_process), batch_size)):
             batch_data = data_to_process[i : i + batch_size]
             batch_prompts = []
             batch_mm_data = []
@@ -129,13 +131,15 @@ def generate_cot_data(input_filepath, output_filepath, batch_size, llm):
                     continue
 
                 prompt_text = (
-                    f"You are a medical expert. Given the image, question, and the correct answer, "
-                    f"provide a step-by-step diagnostic reasoning process that logically leads to the *correct* answer. "
-                    f"Focus on visual and textual cues from the image and question. Be concise, clear, and clinically sound. "
-                    f"Do not just state the answer at the end, the reasoning itself is the primary output.\n\n"
+                    f"You are a medical expert. Your task is to generate a chain-of-thought reasoning for a given medical image and question. "
+                    f"The reasoning should be a concise, single paragraph that explains the logical steps to arrive at the correct answer, focusing on visual evidence in the image. "
+                    f"Do not use a numbered or bulleted list. The output should only contain your thinking process.\n\n"
+                    f"Here is an example of a good reasoning process:\n"
+                    f"The image presented is a transverse CT scan of the abdomen and pelvis. The presence of calculi (urines filled with stones or grit) in the pelvic organs is a consistent finding in urolithiasis.\n\n"
+                    f"Now, generate the reasoning for the following:\n"
                     f"Question: {question_text}\n"
                     f"Correct Answer: {correct_answer}\n\n"
-                    f"Reasoning process leading to the correct answer:"
+                    f"Reasoning:"
                 )
 
                 messages = [
@@ -183,6 +187,14 @@ def generate_cot_data(input_filepath, output_filepath, batch_size, llm):
             for output, original_item in zip(outputs, original_data_batch):
                 generated_cot = output.outputs[0].text.strip()
 
+                # --- IMPROVEMENT 2: Clean LLM output ---
+                # Remove <think> tags if the model includes them
+                if generated_cot.startswith("<think>"):
+                    generated_cot = generated_cot[len("<think>") :]
+                if generated_cot.endswith("</think>"):
+                    generated_cot = generated_cot[: -len("</think>")]
+                generated_cot = generated_cot.strip()
+
                 result = {
                     "image_path": original_item.get("image"),
                     "question": original_item.get("question"),
@@ -203,8 +215,40 @@ if __name__ == "__main__":
     np.random.seed(42)
     torch.manual_seed(42)
 
+    COT_OUTPUT_FILE = "/data/ljd/VLM-R1/dataset/sft/pathgen_instruct_close_cot.jsonl"
+    SUBSET_OUTPUT_FILE = (
+        "/data/ljd/VLM-R1/dataset/sft/pathgen_instruct_close_subset.jsonl"
+    )
+
+    print(f"Loading data from {MCQ_INPUT_FILE}...")
+    try:
+        with open(MCQ_INPUT_FILE, "r", encoding="utf-8") as f:
+            all_mcq_data = json.load(f)
+        print(f"Loaded {len(all_mcq_data)} total samples.")
+    except FileNotFoundError:
+        print(f"Error: Input file not found at {MCQ_INPUT_FILE}")
+        exit()
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        exit()
+
+    random.shuffle(all_mcq_data)
+    split_index = int(len(all_mcq_data) * 0.3)
+    cot_data_to_process = all_mcq_data[:split_index]
+    subset_data_to_save = all_mcq_data[split_index:]
+
+    print(
+        f"Splitting data: {len(cot_data_to_process)} for CoT, {len(subset_data_to_save)} for subset."
+    )
+
+    print(f"Saving {len(subset_data_to_save)} samples to {SUBSET_OUTPUT_FILE}...")
+    with open(SUBSET_OUTPUT_FILE, "w", encoding="utf-8") as f:
+        for item in tqdm(subset_data_to_save, desc="Saving subset"):
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    print("Subset data saved.")
+
     llm = initialize_llm()
 
-    generate_cot_data(MCQ_INPUT_FILE, COT_OUTPUT_FILE, BATCH_SIZE, llm)
+    generate_cot_data(cot_data_to_process, COT_OUTPUT_FILE, BATCH_SIZE, llm)
 
     print("\nCoT data generation completed.")

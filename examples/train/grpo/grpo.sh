@@ -14,8 +14,8 @@ echo "Waiting 30s for vLLM server to start..."
 sleep 40
 echo "Starting RLHF training..."
 
-CUDA_VISIBLE_DEVICES=1 \
-NPROC_PER_NODE=1 \
+CUDA_VISIBLE_DEVICES=1,2,3 \
+NPROC_PER_NODE=3 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
@@ -31,7 +31,7 @@ swift rlhf \
     --vllm_mode server \
     --vllm_server_host 127.0.0.1 \
     --vllm_server_port 8272 \
-    --vllm_server_timeout 60 \
+    --vllm_server_timeout 120 \
     --train_type lora \
     --lora_rank 8 \
     --lora_alpha 16 \
@@ -39,32 +39,32 @@ swift rlhf \
     --torch_dtype bfloat16 \
     --dataset "/data/ljd/VLM-R1/dataset/rl/pathgen_mcq_rl.jsonl" \
     --load_from_cache_file true \
-    --max_completion_length 1024 \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 24 \
-    --per_device_eval_batch_size 24 \
-    --learning_rate 1e-5 \
-    --gradient_accumulation_steps 16 \
+    --max_completion_length 2048 \
+    --max_steps 500 \
+    --per_device_train_batch_size 12 \
+    --per_device_eval_batch_size 12 \
+    --learning_rate 1e-6 \
+    --gradient_accumulation_steps 24 \
     --save_strategy 'steps' \
     --eval_strategy 'steps' \
-    --eval_steps 500 \
-    --save_steps 500 \
+    --eval_steps 100 \
+    --save_steps 100 \
     --save_total_limit 2 \
     --logging_steps 10 \
     --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft_RL \
-    --warmup_ratio 0.02 \
+    --warmup_ratio 0.01 \
     --dataloader_num_workers 6 \
     --num_generations 24 \
     --temperature 1.0 \
     --system 'examples/train/grpo/prompt.txt' \
-    --deepspeed zero2 \
+    --deepspeed zero3 \
     --log_completions true \
     --attn_impl flash_attention_2 \
     --report_to tensorboard \
     --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft_RL/logs \
     --num_iterations 1 \
     --async_generate false \
-    --beta 0.0001 \
-    --max_grad_norm 0.5 
+    --beta 0.001 \
+    --max_grad_norm 1.0 
 
-# 
+# num_train_epochs 1

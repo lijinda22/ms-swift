@@ -97,6 +97,7 @@ swift sft \
     --target_modules all-linear
 
 
+
 # SFT, distillation test
 NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
@@ -109,7 +110,7 @@ swift sft \
     --train_type lora \
     --dataset "/data/ljd/VLM-R1/dataset/sft/merged_sft_dataset_sample1k.jsonl" \
     --max_steps 2 \
-    --split_dataset_ratio 0.01 \
+    --split_dataset_ratio 0.1 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
