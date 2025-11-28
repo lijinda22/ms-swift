@@ -604,58 +604,89 @@ class SftKdTrainer(Seq2SeqTrainer):
         #     logger.info("Added KD student projection parameters to the optimizer.")
         return optimizer
 
-    def _kd_data_collator(
-        self, batch: List[Dict[str, Any]], **kwargs
-    ) -> Dict[str, Any]:
+
+    def _kd_data_collator(self, batch: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """
-        Wraps the original data collator to extract PIL images
-        and prepare teacher_pixel_values.
+        KD Data Collator:
+        仅负责从 batch 中提取预处理好的 'teacher_pixel_values' 并堆叠。
         """
-        pil_images_for_teacher = []
-
-        # When packing is enabled, the batch is a list of lists of dictionaries.
-        # We need to flatten it to iterate over each sample.
-        iterable_batch = batch
-        if hasattr(self, "template") and self.template.packing:
-            iterable_batch = [item for sublist in batch for item in sublist]
-
-        for d in iterable_batch:
-            logger.info(f"Processing sample {d.keys()}")
-            # logger.info(f"Processing sample", d["pixel_values"].size())
-            # raise NotImplementedError("SFT + ViT Knowledge Distillation not supported")
-            pil_img = None
-            image_data = d.get("images")
-            if image_data and isinstance(image_data, list) and len(image_data) > 0:
-                image_item = image_data[0]
-                if isinstance(image_item, str):
-                    try:
-                        pil_img = Image.open(image_item).convert("RGB")
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not load image from path: {image_item}. Error: {e}"
-                        )
-                elif hasattr(image_item, "convert"):  # Is a PIL Image
-                    pil_img = image_item.convert("RGB")
-            pil_images_for_teacher.append(pil_img)
-
-        # The original collator knows how to handle the packed (or unpacked) batch.
+        # 1. 调用原始 collator 处理 Student 的输入
+        # 注意：如果开启 packing，这里的 batch 已经是 packed 过的（但我们的自定义字段可能被丢弃）
         student_inputs = self.original_data_collator(batch, **kwargs)
-        teacher_pixel_values_list = []
-        valid_image_indices = []
-        for i, pil_img in enumerate(pil_images_for_teacher):
-            assert pil_img, "No image provided for teacher"
-            try:
-                teacher_pixel_values_list.append(self.teacher_transform(pil_img))
-                valid_image_indices.append(i)
-            except Exception as e:
-                logger.warning(f"Failed to transform image {i} for teacher: {e}")
-        if teacher_pixel_values_list:
-            teacher_pixel_values = torch.stack(teacher_pixel_values_list)
-            student_inputs["teacher_pixel_values"] = teacher_pixel_values
-            student_inputs["teacher_image_indices"] = torch.tensor(
-                valid_image_indices, dtype=torch.long
-            )
+
+        # 2. 提取 Teacher 输入
+        teacher_vals = []
+        teacher_indices = []
+        
+        # 遍历 batch (如果是 packing=False，batch 是样本列表)
+        # 如果 packing=True 且 PackingDataset 没修改，这里可能取不到 teacher_pixel_values
+        for i, item in enumerate(batch):
+            print(item.keys()) # dict_keys(['input_ids', 'labels', 'pixel_values', 'length']), 获取不到 teacher_pixel_values
+            raise NotImplementedError
+            val = item.get('teacher_pixel_values')
+            if val is not None:
+                teacher_vals.append(val)
+                teacher_indices.append(i)
+        
+        if teacher_vals:
+            # Stack 成一个 Tensor [Batch_Size, C, H, W]
+            student_inputs["teacher_pixel_values"] = torch.stack(teacher_vals)
+            # 记录哪些样本有 Teacher 图片
+            student_inputs["teacher_image_indices"] = torch.tensor(teacher_indices, dtype=torch.long)
+        
         return student_inputs
+    
+    # def _kd_data_collator(
+    #     self, batch: List[Dict[str, Any]], **kwargs
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Wraps the original data collator to extract PIL images
+    #     and prepare teacher_pixel_values.
+    #     """
+    #     pil_images_for_teacher = []
+    #     # When packing is enabled, the batch is a list of lists of dictionaries.
+    #     # We need to flatten it to iterate over each sample.
+    #     iterable_batch = batch
+    #     if hasattr(self, "template") and self.template.packing:
+    #         iterable_batch = [item for sublist in batch for item in sublist]
+
+    #     for d in iterable_batch:
+    #         logger.info(f"Processing sample {d.keys()}")
+    #         # logger.info(f"Processing sample", d["pixel_values"].size())
+    #         # raise NotImplementedError("SFT + ViT Knowledge Distillation not supported")
+    #         pil_img = None
+    #         image_data = d.get("images")
+    #         if image_data and isinstance(image_data, list) and len(image_data) > 0:
+    #             image_item = image_data[0]
+    #             if isinstance(image_item, str):
+    #                 try:
+    #                     pil_img = Image.open(image_item).convert("RGB")
+    #                 except Exception as e:
+    #                     logger.warning(
+    #                         f"Could not load image from path: {image_item}. Error: {e}"
+    #                     )
+    #             elif hasattr(image_item, "convert"):  # Is a PIL Image
+    #                 pil_img = image_item.convert("RGB")
+    #         pil_images_for_teacher.append(pil_img)
+
+    #     # The original collator knows how to handle the packed (or unpacked) batch.
+    #     student_inputs = self.original_data_collator(batch, **kwargs)
+    #     teacher_pixel_values_list = []
+    #     valid_image_indices = []
+    #     for i, pil_img in enumerate(pil_images_for_teacher):
+    #         assert pil_img, "No image provided for teacher"
+    #         try:
+    #             teacher_pixel_values_list.append(self.teacher_transform(pil_img))
+    #             valid_image_indices.append(i)
+    #         except Exception as e:
+    #             logger.warning(f"Failed to transform image {i} for teacher: {e}")
+    #     if teacher_pixel_values_list:
+    #         teacher_pixel_values = torch.stack(teacher_pixel_values_list)
+    #         student_inputs["teacher_pixel_values"] = teacher_pixel_values
+    #         student_inputs["teacher_image_indices"] = torch.tensor(
+    #             valid_image_indices, dtype=torch.long
+    #         )
+    #     return student_inputs
 
     def _student_hook(self, module, input, output):
         """
@@ -677,7 +708,9 @@ class SftKdTrainer(Seq2SeqTrainer):
         if hidden_states is not None:
             # Use the first token's representation as a proxy for the global/CLS token.
             if hidden_states.ndim == 3:
-                self.student_cls_token_buffer = hidden_states[:, 0, :]
+                # 由于不确定是否有CLS token，我们默认使用第一个token表示或者序列的平均表示
+                self.student_cls_token_buffer = hidden_states[:, 0, :]  # 取第一个token
+                # 或者使用平均值: self.student_cls_token_buffer = hidden_states.mean(dim=1)
             elif hidden_states.ndim == 2:
                 self.student_cls_token_buffer = hidden_states
             else:

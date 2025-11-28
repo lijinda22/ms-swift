@@ -5,7 +5,7 @@ from typing import List, Optional, Union
 
 from datasets import Dataset as HfDataset
 from datasets import load_from_disk
-
+from PIL import Image
 from swift.llm.dataset.loader import DatasetLoader
 from swift.plugin import extra_callbacks
 from swift.trainers import TrainerFactory, Seq2SeqTrainer
@@ -97,6 +97,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
             self.teacher_model.requires_grad_(False)
 
     def _prepare_template(self) -> None:
+        # raise Exception("Please implement _prepare_template()")
         args = self.args
         template = args.get_template(self.processor)
         template.set_mode("train")
@@ -111,6 +112,54 @@ class SwiftSft(SwiftPipeline, TunerMixin):
                 f"Template `{args.template}` does not support padding free or packing."
             )
         self.template = template
+        # === [新增修改] Hook template.encode 以注入 Teacher Transform ===
+        print("self.teacher_model: ", self.teacher_model)
+        if self.teacher_model is not None:
+            self._hook_template_encode_for_distillation()
+    
+    def _hook_template_encode_for_distillation(self):
+        """
+        劫持 template.encode，在生成 Student 输入的同时，
+        利用原始图片路径生成 Teacher 的输入 (teacher_pixel_values)。
+        """
+        original_encode = self.template.encode
+        teacher_transform = self.teacher_transform
+
+        def encode_with_teacher(example, **kwargs):
+            # 1. 执行原始 encode，获取 input_ids, pixel_values (Student用) 等
+            result = original_encode(example, **kwargs)
+            
+            # 2. 获取原始图片并处理 (Teacher用)
+            # ms-swift 的 example 通常包含 'images' 键，是列表或路径
+            images = example.get('images') 
+            if images:
+                # 假设每条数据取第一张图进行蒸馏 (根据具体业务调整)
+                image_item = images[0] 
+                try:
+                    if isinstance(image_item, str):
+                        pil_img = Image.open(image_item).convert("RGB")
+                    elif hasattr(image_item, "convert"):
+                        pil_img = image_item.convert("RGB")
+                    else:
+                        pil_img = None
+                    
+                    if pil_img:
+                        # 应用 Teacher 的 transform
+                        # 注意：这里是在 CPU 上做预处理，结果存入 dataset
+                        pixel_val = teacher_transform(pil_img)
+                        result['teacher_pixel_values'] = pixel_val
+                        print("teacher img 获取已transform:", image_item)
+                        # 标记该样本包含有效图片 (用于 compute_loss 时过滤)
+                        result['has_teacher_image'] = True
+                except Exception as e:
+                    logger.warning(f"Teacher transform failed for image: {image_item}. Error: {e}")
+            
+            return result
+
+        # 替换实例方法
+        self.template.encode = encode_with_teacher
+        logger.info("Successfully hooked template.encode for Knowledge Distillation pre-processing.")
+        # raise Exception("Please implement _hook_template_encode_for_distillation()")
 
     def _get_dataset(self):
         # The random shuffling of the training set occurs in the dataloader of the trainer.

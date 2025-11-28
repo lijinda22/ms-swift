@@ -108,7 +108,7 @@ CUDA_VISIBLE_DEVICES=4,5 \
 swift sft \
     --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v1-20251120-221418/checkpoint-1400 \
     --train_type lora \
-    --dataset "/data/ljd/VLM-R1/dataset/sft/merged_sft_dataset_sample1k.jsonl" \
+    --dataset "/data/ljd/VLM-R1/dataset/sft/deprecated/merged_sft_dataset_sample1k.jsonl" \
     --max_steps 2 \
     --split_dataset_ratio 0.1 \
     --torch_dtype bfloat16 \
@@ -116,7 +116,6 @@ swift sft \
     --per_device_eval_batch_size 1 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 1 \
-    --packing true \
     --eval_steps 2 \
     --save_steps 2 \
     --logging_steps 2 \
