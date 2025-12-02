@@ -31,6 +31,8 @@ class RowPreprocessor:
                                 'label',
                                 'channel',
                                 'margin',
+                                'teacher_pixel_values',
+                                'has_teacher_image',
                             ]
 
     def __init__(self,

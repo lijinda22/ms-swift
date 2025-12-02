@@ -11,13 +11,13 @@ from qwen_vl_utils import process_vision_info
 import numpy as np
 
 MODEL_PATH = "/data/ckpt/Lingshu-32B"
-TENSOR_PARALLEL_SIZE = 2
-GPU_MEMORY_UTILIZATION = 0.9
+TENSOR_PARALLEL_SIZE = 4
+GPU_MEMORY_UTILIZATION = 0.92
 MAX_IMAGES_PER_PROMPT = 1
 
 MCQ_INPUT_FILE = "/data/ljd/VLM-R1/dataset/sft/pathgen_instruct_close_137555.json"
 
-BATCH_SIZE = 32
+BATCH_SIZE = 36
 SAMPLING_TEMP_COT = 0.2
 SAMPLING_TOP_P_COT = 0.9
 MAX_TOKENS_COT = 512

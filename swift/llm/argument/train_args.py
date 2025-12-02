@@ -161,7 +161,7 @@ class TrainArguments(
         metadata={"help": "Path to the pretrained weights of the teacher model"},
     )
     kd_loss_weight: float = field(
-        default=0.05,
+        default=0.02,
         metadata={"help": "Weight for the knowledge distillation loss (w * KD_Loss)"},
     )
     kd_projection_dim: Optional[int] = field(

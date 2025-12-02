@@ -34,6 +34,52 @@ logger = get_logger()
 # main_process_logger = get_main_process_logger()
 
 
+class TeacherEncoder:
+    """
+    Helper class to wrap template.encode for Knowledge Distillation.
+    Ensures picklability for multiprocessing.
+    """
+    def __init__(self, original_encode, teacher_transform):
+        self.original_encode = original_encode
+        self.teacher_transform = teacher_transform
+
+    def __call__(self, example, **kwargs):
+        result = self.original_encode(example, **kwargs)
+        images = example.get('images')
+        if images is None:
+            images = example.get('image')
+            if images is not None and not isinstance(images, list):
+                images = [images]
+        
+        if images:
+            image_item = images[0]
+            try:
+                pil_img = None
+                if isinstance(image_item, str):
+                    pil_img = Image.open(image_item).convert("RGB")
+                elif isinstance(image_item, dict):
+                    if image_item.get('bytes'):
+                        import io
+                        pil_img = Image.open(io.BytesIO(image_item['bytes'])).convert("RGB")
+                    elif image_item.get('path'):
+                        pil_img = Image.open(image_item['path']).convert("RGB")
+                elif hasattr(image_item, "convert"):
+                    pil_img = image_item.convert("RGB")
+                
+                if pil_img:
+                    pixel_val = self.teacher_transform(pil_img)
+                    result['teacher_pixel_values'] = pixel_val
+                    result['has_teacher_image'] = True
+            except Exception as e:
+                import traceback
+                logger.warning(f"Teacher transform failed for image: {image_item}. Error: {e}")
+                logger.warning(traceback.format_exc())
+        else:
+            logger.warning_once(f"TeacherEncoder: No images found in example. Available keys: {list(example.keys())}. Check dataset format.")
+        assert images or result.get('has_teacher_image', False)
+        return result
+
+
 class SwiftSft(SwiftPipeline, TunerMixin):
     args_class = TrainArguments
     args: args_class
@@ -113,7 +159,6 @@ class SwiftSft(SwiftPipeline, TunerMixin):
             )
         self.template = template
         # === [新增修改] Hook template.encode 以注入 Teacher Transform ===
-        print("self.teacher_model: ", self.teacher_model)
         if self.teacher_model is not None:
             self._hook_template_encode_for_distillation()
     
@@ -122,44 +167,10 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         劫持 template.encode，在生成 Student 输入的同时，
         利用原始图片路径生成 Teacher 的输入 (teacher_pixel_values)。
         """
-        original_encode = self.template.encode
-        teacher_transform = self.teacher_transform
-
-        def encode_with_teacher(example, **kwargs):
-            # 1. 执行原始 encode，获取 input_ids, pixel_values (Student用) 等
-            result = original_encode(example, **kwargs)
-            
-            # 2. 获取原始图片并处理 (Teacher用)
-            # ms-swift 的 example 通常包含 'images' 键，是列表或路径
-            images = example.get('images') 
-            if images:
-                # 假设每条数据取第一张图进行蒸馏 (根据具体业务调整)
-                image_item = images[0] 
-                try:
-                    if isinstance(image_item, str):
-                        pil_img = Image.open(image_item).convert("RGB")
-                    elif hasattr(image_item, "convert"):
-                        pil_img = image_item.convert("RGB")
-                    else:
-                        pil_img = None
-                    
-                    if pil_img:
-                        # 应用 Teacher 的 transform
-                        # 注意：这里是在 CPU 上做预处理，结果存入 dataset
-                        pixel_val = teacher_transform(pil_img)
-                        result['teacher_pixel_values'] = pixel_val
-                        print("teacher img 获取已transform:", image_item)
-                        # 标记该样本包含有效图片 (用于 compute_loss 时过滤)
-                        result['has_teacher_image'] = True
-                except Exception as e:
-                    logger.warning(f"Teacher transform failed for image: {image_item}. Error: {e}")
-            
-            return result
-
-        # 替换实例方法
-        self.template.encode = encode_with_teacher
+        logger.info("Hooking template.encode for Knowledge Distillation using TeacherEncoder wrapper.")
+        # Replace instance method with a callable object (picklable)
+        self.template.encode = TeacherEncoder(self.template.encode, self.teacher_transform)
         logger.info("Successfully hooked template.encode for Knowledge Distillation pre-processing.")
-        # raise Exception("Please implement _hook_template_encode_for_distillation()")
 
     def _get_dataset(self):
         # The random shuffling of the training set occurs in the dataloader of the trainer.

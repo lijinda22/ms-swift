@@ -1,11 +1,11 @@
 swift export \
     --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --dataset "/data/ljd/VLM-R1/dataset/sft/merged_sft_dataset.jsonl" \
+    --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/merged.jsonl" \
     --max_length 8192 \
     --dataset_num_proc 8 \
     --split_dataset_ratio 0.01 \
     --to_cached_dataset true \
-    --output_dir /data/ljd/VLM-R1/dataset/sft/sft_cached_dataset
+    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset
 
 # 4 * 44GiB; 15.5s/it
 # 直接sft
@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES=1,2 \
 swift sft \
     --model /data/ckpt/Qwen3-VL-2B-Instruct \
     --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/sft_cached_dataset" \
+    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.01 \
     --torch_dtype bfloat16 \
@@ -27,7 +27,6 @@ swift sft \
     --per_device_eval_batch_size 1 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 16 \
-    --packing true \
     --eval_steps 100 \
     --save_steps 100 \
     --logging_steps 5 \
@@ -50,8 +49,6 @@ swift sft \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear
-
-# --save_only_model true \
     
 # cpt+sft
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
@@ -72,7 +69,6 @@ swift sft \
     --per_device_eval_batch_size 1 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 16 \
-    --packing true \
     --eval_steps 100 \
     --save_steps 100 \
     --logging_steps 5 \
@@ -106,22 +102,20 @@ FPS_MAX_FRAMES=16 \
 MASTER_PORT=29541 \
 CUDA_VISIBLE_DEVICES=4,5 \
 swift sft \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v1-20251120-221418/checkpoint-1400 \
+    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v3-20251201-111741/checkpoint-1600 \
     --train_type lora \
     --dataset "/data/ljd/VLM-R1/dataset/sft/deprecated/merged_sft_dataset_sample1k.jsonl" \
     --max_steps 2 \
-    --split_dataset_ratio 0.1 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 1 \
-    --eval_steps 2 \
     --save_steps 2 \
     --logging_steps 2 \
     --max_length 4096 \
     --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 0 \
     --dataset_num_proc 2 \
     --save_total_limit 1 \
     --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_test \
@@ -161,7 +155,6 @@ swift sft \
     --per_device_eval_batch_size 1 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 16 \
-    --packing true \
     --eval_steps 100 \
     --save_steps 100 \
     --logging_steps 5 \

@@ -39,7 +39,6 @@ swift pt \
     --dataloader_num_workers 6 \
     --dataset_num_proc 4 \
     --padding_free true \
-    --save_only_model true \
     --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt \
     --attn_impl flash_attn \
     --check_model false \
@@ -50,9 +49,8 @@ swift pt \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
     --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/logs \
-    
-    # --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_pretrain/v0-20251113-235149/checkpoint-500/ \
-    # --resume_only_model true
+    --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v1-20251120-221418/checkpoint-1400/ \
+    --resume_only_model true
     # --train_type lora \
     # --lora_rank 8 \
     # --lora_alpha 32 \

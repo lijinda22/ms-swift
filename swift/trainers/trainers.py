@@ -544,24 +544,21 @@ class KnowledgeDistillationModule(nn.Module):
     """A module to hold all components for Knowledge Distillation."""
 
     def __init__(
-        self, student_hidden_size: int, teacher_hidden_size: int, projection_dim: int
+        self, student_hidden_size: int, teacher_hidden_size: int
     ):
         super().__init__()
-        self.student_projection = nn.Linear(student_hidden_size, projection_dim)
-        self.teacher_projection = nn.Linear(teacher_hidden_size, projection_dim)
+        # Optimal Projection Strategy:
+        # Teacher: Identity (preserve original semantic space)
+        # Student: Learn to map to Teacher's space
+        self.student_projection = nn.Linear(student_hidden_size, teacher_hidden_size)
+        self.teacher_projection = nn.Identity()
 
-        # Explicitly initialize weights and biases
-        # This ensures deterministic initialization and addresses concerns about all-zero weights.
-        for layer in [self.student_projection, self.teacher_projection]:
-            torch.nn.init.kaiming_normal_(
-                layer.weight, mode="fan_in", nonlinearity="relu"
-            )
-            if layer.bias is not None:
-                torch.nn.init.zeros_(layer.bias)
+        # Explicitly initialize student projection
+        torch.nn.init.orthogonal_(self.student_projection.weight)
+        if self.student_projection.bias is not None:
+            torch.nn.init.zeros_(self.student_projection.bias)
 
-        # Freeze teacher projection
-        self.teacher_projection.requires_grad_(False)
-        self.register_buffer("center", torch.zeros(1, projection_dim))
+        self.register_buffer("center", torch.zeros(1, teacher_hidden_size))
 
 
 class SftKdTrainer(Seq2SeqTrainer):
@@ -587,22 +584,24 @@ class SftKdTrainer(Seq2SeqTrainer):
         self.teacher_T = sft_args.kd_teacher_T
         self.center_momentum = sft_args.kd_center_momentum
         self.student_cls_token_buffer = None
+        self.student_spatial_merge_size = 2  # Default for Qwen2-VL/3-VL
         self.kd_module: Optional[KnowledgeDistillationModule] = None
         self.original_data_collator = self.data_collator
         self.data_collator = self._kd_data_collator
         self._init_kd_components()
 
-    def create_optimizer(self):
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         """
-        Override to add the parameters of the KD student projection layer to the optimizer.
+        Override save_model to also save the KD adapter weights.
         """
-        optimizer = super().create_optimizer()
-        # if hasattr(self, "kd_module") and self.kd_module is not None:
-        #     optimizer.add_param_group(
-        #         {"params": self.kd_module.student_projection.parameters()}
-        #     )
-        #     logger.info("Added KD student projection parameters to the optimizer.")
-        return optimizer
+        super().save_model(output_dir, _internal_call)
+        # Only save on the main process to avoid race conditions and errors on other ranks
+        if self.is_world_process_zero() and output_dir and self.kd_module:
+            # Ensure the directory exists before saving
+            os.makedirs(output_dir, exist_ok=True)
+            kd_path = os.path.join(output_dir, "kd_module.pt")
+            torch.save(self.kd_module.state_dict(), kd_path)
+            logger.info(f"Saved KD module to {kd_path}")
 
 
     def _kd_data_collator(self, batch: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
@@ -615,114 +614,77 @@ class SftKdTrainer(Seq2SeqTrainer):
         student_inputs = self.original_data_collator(batch, **kwargs)
 
         # 2. 提取 Teacher 输入
+        # Handle packing (list of lists)
+        if batch and isinstance(batch[0], list):
+            flat_batch = [item for sublist in batch for item in sublist]
+        else:
+            flat_batch = batch
+
         teacher_vals = []
         teacher_indices = []
         
-        # 遍历 batch (如果是 packing=False，batch 是样本列表)
-        # 如果 packing=True 且 PackingDataset 没修改，这里可能取不到 teacher_pixel_values
-        for i, item in enumerate(batch):
-            print(item.keys()) # dict_keys(['input_ids', 'labels', 'pixel_values', 'length']), 获取不到 teacher_pixel_values
-            raise NotImplementedError
-            val = item.get('teacher_pixel_values')
-            if val is not None:
-                teacher_vals.append(val)
-                teacher_indices.append(i)
+        # Track student image index (dense) to align with student_cls_token_buffer
+        student_img_idx = 0
         
+        # 遍历 batch
+        for i, item in enumerate(flat_batch):
+            # print("item.keys:", item.keys())
+            # Determine if this sample contributes an image to the student model
+            has_student_image = False
+            num_images_in_sample = 0
+            
+            if 'pixel_values' in item and item['pixel_values'] is not None:
+                has_student_image = True
+                # Estimate number of images. For standard swift/qwen2-vl, it's usually 1 per sample or flattened.
+                # If pixel_values is list, len is num images. If tensor 4D, shape[0].
+                # For simplicity and common cases (1 image), we assume 1 unless list.
+                pv = item['pixel_values']
+                if isinstance(pv, list):
+                    num_images_in_sample = len(pv)
+                elif isinstance(pv, torch.Tensor) and pv.ndim == 4:
+                    num_images_in_sample = pv.shape[0]
+                else:
+                    num_images_in_sample = 1
+
+            if has_student_image:
+                if 'teacher_pixel_values' in item:
+                    teacher_vals.append(item['teacher_pixel_values'])
+                    # Map to the FIRST image of this sample in the student buffer
+                    teacher_indices.append(student_img_idx)
+                else:
+                     # Student has image but Teacher failed/missing.
+                     # Log warning only once per run/file?
+                     pass
+
+                # Check for multi-image alignment risk
+                if num_images_in_sample > 1:
+                     logger.warning_once(
+                        f"Sample {i} contains {num_images_in_sample} images. "
+                        "Current KD logic aligns Teacher to the FIRST image of the sample."
+                    )
+                
+                student_img_idx += num_images_in_sample
+
+            elif "teacher_pixel_values" in item:
+                logger.warning_once(f"Sample {i} has teacher_pixel_values but no pixel_values. Ignoring teacher image.")
+
         if teacher_vals:
             # Stack 成一个 Tensor [Batch_Size, C, H, W]
             student_inputs["teacher_pixel_values"] = torch.stack(teacher_vals)
-            # 记录哪些样本有 Teacher 图片
+            # 记录哪些样本有 Teacher 图片 (Indices into the dense student buffer)
             student_inputs["teacher_image_indices"] = torch.tensor(teacher_indices, dtype=torch.long)
         
         return student_inputs
-    
-    # def _kd_data_collator(
-    #     self, batch: List[Dict[str, Any]], **kwargs
-    # ) -> Dict[str, Any]:
-    #     """
-    #     Wraps the original data collator to extract PIL images
-    #     and prepare teacher_pixel_values.
-    #     """
-    #     pil_images_for_teacher = []
-    #     # When packing is enabled, the batch is a list of lists of dictionaries.
-    #     # We need to flatten it to iterate over each sample.
-    #     iterable_batch = batch
-    #     if hasattr(self, "template") and self.template.packing:
-    #         iterable_batch = [item for sublist in batch for item in sublist]
-
-    #     for d in iterable_batch:
-    #         logger.info(f"Processing sample {d.keys()}")
-    #         # logger.info(f"Processing sample", d["pixel_values"].size())
-    #         # raise NotImplementedError("SFT + ViT Knowledge Distillation not supported")
-    #         pil_img = None
-    #         image_data = d.get("images")
-    #         if image_data and isinstance(image_data, list) and len(image_data) > 0:
-    #             image_item = image_data[0]
-    #             if isinstance(image_item, str):
-    #                 try:
-    #                     pil_img = Image.open(image_item).convert("RGB")
-    #                 except Exception as e:
-    #                     logger.warning(
-    #                         f"Could not load image from path: {image_item}. Error: {e}"
-    #                     )
-    #             elif hasattr(image_item, "convert"):  # Is a PIL Image
-    #                 pil_img = image_item.convert("RGB")
-    #         pil_images_for_teacher.append(pil_img)
-
-    #     # The original collator knows how to handle the packed (or unpacked) batch.
-    #     student_inputs = self.original_data_collator(batch, **kwargs)
-    #     teacher_pixel_values_list = []
-    #     valid_image_indices = []
-    #     for i, pil_img in enumerate(pil_images_for_teacher):
-    #         assert pil_img, "No image provided for teacher"
-    #         try:
-    #             teacher_pixel_values_list.append(self.teacher_transform(pil_img))
-    #             valid_image_indices.append(i)
-    #         except Exception as e:
-    #             logger.warning(f"Failed to transform image {i} for teacher: {e}")
-    #     if teacher_pixel_values_list:
-    #         teacher_pixel_values = torch.stack(teacher_pixel_values_list)
-    #         student_inputs["teacher_pixel_values"] = teacher_pixel_values
-    #         student_inputs["teacher_image_indices"] = torch.tensor(
-    #             valid_image_indices, dtype=torch.long
-    #         )
-    #     return student_inputs
 
     def _student_hook(self, module, input, output):
         """
         Forward hook to capture the student ViT's global representation.
-        Handles various output formats (tensor, tuple, object).
-        Qwen3-VL does not have a traditional [CLS] token, so we use the
-        representation of the first token from the final visual output as a proxy.
+        Just capture raw output. Post-processing moves to compute_loss.
         """
-        hidden_states = None
-        if hasattr(output, "last_hidden_state"):
-            # For BaseModelOutputWithPooling or similar structures
-            hidden_states = output.last_hidden_state
-        elif isinstance(output, torch.Tensor):
-            # If the output is just the hidden states tensor
-            hidden_states = output
-        elif isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor):
-            # If the output is a tuple and the first element is the hidden_states
-            hidden_states = output[0]
-        if hidden_states is not None:
-            # Use the first token's representation as a proxy for the global/CLS token.
-            if hidden_states.ndim == 3:
-                # 由于不确定是否有CLS token，我们默认使用第一个token表示或者序列的平均表示
-                self.student_cls_token_buffer = hidden_states[:, 0, :]  # 取第一个token
-                # 或者使用平均值: self.student_cls_token_buffer = hidden_states.mean(dim=1)
-            elif hidden_states.ndim == 2:
-                self.student_cls_token_buffer = hidden_states
-            else:
-                logger.warning_once(
-                    f"Student ViT hook received hidden_states with unexpected dimension {hidden_states.ndim}. "
-                    f"Cannot capture token for KD."
-                )
+        if isinstance(output, tuple):
+            self.student_cls_token_buffer = output[0]
         else:
-            logger.warning_once(
-                f"Student ViT hook could not extract hidden_states from output of type {type(output)}. "
-                f"Cannot capture token for KD."
-            )
+            self.student_cls_token_buffer = output
 
     def _init_kd_components(self):
         # 初始化知识蒸馏组件
@@ -732,6 +694,9 @@ class SftKdTrainer(Seq2SeqTrainer):
             # The output dimension of the visual part is the input to the LM.
             # We can get this from the visual merger's output features.
             student_hidden_size = student_vit_module.merger.linear_fc2.out_features
+            # Capture spatial merge size for pooling calculation
+            self.student_spatial_merge_size = getattr(student_vit_module, "spatial_merge_size", 2)
+            
             student_vit_module.register_forward_hook(self._student_hook)
             logger.info(
                 f"Registered forward hook on student ViT module: {student_vit_module.__class__.__name__}"
@@ -750,23 +715,24 @@ class SftKdTrainer(Seq2SeqTrainer):
             )
             self.kd_loss_weight = 0.0
             return
-        projection_dim = self.sft_args.kd_projection_dim
-        if projection_dim is None:
-            projection_dim = student_hidden_size
-            logger.info(
-                f"kd_projection_dim not set. Defaulting to student ViT hidden size: {projection_dim}"
-            )
 
         self.kd_module = KnowledgeDistillationModule(
             student_hidden_size=student_hidden_size,
             teacher_hidden_size=teacher_hidden_size,
-            projection_dim=projection_dim,
         ).to(self.model.device)
 
-        logger.info("Initialized Knowledge Distillation Components.")
-        logger.info(f"  Student ViT CLS: {student_hidden_size} -> {projection_dim}")
+        # CRITICAL: Attach to model so optimizer picks up the parameters!
+        # We use a distinct name to avoid conflict with existing modules.
+        if not hasattr(self.model, "kd_adapter"):
+            self.model.kd_adapter = self.kd_module
+        else:
+            logger.warning("Model already has 'kd_adapter'. Using existing one (resume?).")
+            self.kd_module = self.model.kd_adapter
+
+        logger.info("Initialized Knowledge Distillation Components (Optimal Projection).")
+        logger.info(f"  Student ViT Dim: {student_hidden_size} -> {teacher_hidden_size}")
         logger.info(
-            f"  Teacher ViT CLS: {teacher_hidden_size} -> {projection_dim} (Frozen)"
+            f"  Teacher ViT Dim: {teacher_hidden_size} -> {teacher_hidden_size} (Identity)"
         )
 
     def _dino_loss(self, student_output, teacher_output):
@@ -775,7 +741,7 @@ class SftKdTrainer(Seq2SeqTrainer):
         teacher_out = (teacher_output - self.kd_module.center) / self.teacher_T
         teacher_out = F.softmax(teacher_out, dim=-1).detach()
         kd_loss = -(teacher_out * torch.log(student_out + 1e-9)).sum(dim=-1).mean()
-        if self.training:
+        if self.model.training:
             with torch.no_grad():
                 batch_center = teacher_output.mean(dim=0, keepdim=True)
                 self.kd_module.center = (
@@ -790,11 +756,17 @@ class SftKdTrainer(Seq2SeqTrainer):
         # 计算带知识蒸馏的损失值
         teacher_pixel_values = inputs.pop("teacher_pixel_values", None)
         teacher_image_indices = inputs.pop("teacher_image_indices", None)
+        
+        # Capture image_grid_thw for split calculation before super() consumes/modifies inputs
+        # Note: Qwen2/3-VL expects 'image_grid_thw'.
+        image_grid_thw = inputs.get("image_grid_thw", None)
+
         self.student_cls_token_buffer = None
         sft_loss_outputs = super().compute_loss(
             model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
         )
         sft_loss = sft_loss_outputs[0]
+        
         if (
             self.kd_loss_weight == 0.0
             or self.kd_module is None
@@ -810,41 +782,90 @@ class SftKdTrainer(Seq2SeqTrainer):
                     "Student ViT hook did not run (no images in batch?). Skipping KD loss."
                 )
             return sft_loss_outputs if return_outputs else sft_loss
+        
+        # --- Student Feature Processing (Split & Pool) ---
+        # Qwen3-VL/Qwen2.5-VL output is flattened. We need grid_thw to split.
+        if image_grid_thw is None:
+             logger.warning_once("KD Error: image_grid_thw missing in inputs. Cannot split flattened student features. Skipping KD.")
+             return sft_loss_outputs if return_outputs else sft_loss
+
+        hidden_states = self.student_cls_token_buffer
+        
+        # Calculate split sizes based on merger logic
+        # split_sizes = grid_thw.prod(-1) // (spatial_merge_size**2)
+        # image_grid_thw shape: (Num_Images, 3) -> [T, H, W]
+        # We need to ensure image_grid_thw is on the same device for calculation or move to cpu
+        
         try:
-            student_cls_tokens_all = self.student_cls_token_buffer.clone()
+            split_sizes = (image_grid_thw.to(hidden_states.device).prod(dim=-1) // (self.student_spatial_merge_size ** 2)).tolist()
+            
+            if hidden_states.shape[0] != sum(split_sizes):
+                logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
+                return sft_loss_outputs if return_outputs else sft_loss
+
+            per_image_features = torch.split(hidden_states, split_sizes, dim=0)
+            
+            # GAP
+            pooled_features = [feat.mean(dim=0) for feat in per_image_features]
+            student_cls_tokens_all = torch.stack(pooled_features) # (Num_Images, Dim)
+            
+            # Select subset matching teacher images
             student_cls_for_kd = student_cls_tokens_all[
                 teacher_image_indices.to(student_cls_tokens_all.device)
             ]
-            if student_cls_for_kd.shape[0] == 0:
-                raise ValueError("No matching student samples for KD.")
-            with torch.no_grad():
-                teacher_features = self.teacher_model.trunk.forward_features(
-                    teacher_pixel_values.to(self.model.device)
-                )
-                teacher_cls_for_kd = teacher_features[:, 0, :]
-            assert student_cls_for_kd.shape[0] == teacher_cls_for_kd.shape[0]
-            student_projected = self.kd_module.student_projection(student_cls_for_kd)
-            teacher_projected = self.kd_module.teacher_projection(teacher_cls_for_kd)
-            kd_loss = self._dino_loss(student_projected, teacher_projected)
-            total_loss = sft_loss + self.kd_loss_weight * kd_loss
-            if (
-                self.is_world_process_zero()
-                and self.state.global_step > 0
-                and self.state.global_step % self.args.logging_steps == 0
-            ):
-                self.log(
-                    {
-                        "loss/sft_loss": sft_loss.item(),
-                        "loss/kd_loss": kd_loss.item(),
-                        "loss/total_loss": total_loss.item(),
-                    }
-                )
         except Exception as e:
-            logger.error(
-                f"Error calculating KD loss: {e}. Skipping KD loss for this step."
+            logger.warning_once(f"KD Processing Error: {e}")
+            return sft_loss_outputs if return_outputs else sft_loss
+
+        if student_cls_for_kd.shape[0] == 0:
+            return sft_loss_outputs if return_outputs else sft_loss
+        
+        # Ensure KD module is on the correct device and dtype
+        if self.kd_module.student_projection.weight.dtype != self.model.dtype:
+            self.kd_module.to(self.model.dtype)
+        if self.kd_module.student_projection.weight.device != self.model.device:
+            self.kd_module.to(self.model.device)
+
+        with torch.no_grad():
+            # Ensure teacher input matches student dtype (usually bfloat16)
+            teacher_pixel_values = teacher_pixel_values.to(self.model.device).to(self.model.dtype)
+            
+            if self.teacher_model.trunk.patch_embed.proj.weight.dtype != self.model.dtype:
+                    self.teacher_model.to(self.model.dtype)
+
+            teacher_features = self.teacher_model.trunk.forward_features(
+                teacher_pixel_values
             )
-            total_loss = sft_loss
+            teacher_cls_for_kd = teacher_features[:, 0, :]
+        
+        # Safety check
+        if student_cls_for_kd.shape[0] != teacher_cls_for_kd.shape[0]:
+             logger.warning_once(f"KD Batch Mismatch: Student {student_cls_for_kd.shape[0]} vs Teacher {teacher_cls_for_kd.shape[0]}")
+             return sft_loss_outputs if return_outputs else sft_loss
+
+        # Projects
+        student_projected = self.kd_module.student_projection(student_cls_for_kd)
+        # Teacher projection is Identity, but we explicitly call for consistency
+        teacher_projected = self.kd_module.teacher_projection(teacher_cls_for_kd.to(self.model.dtype))
+        
+        kd_loss = self._dino_loss(student_projected, teacher_projected)
+        total_loss = sft_loss + self.kd_loss_weight * kd_loss
+        print(f"KD Loss: {kd_loss.item()}, SFT Loss: {sft_loss.item()}, Total Loss: {total_loss.item()}")
+        # Save losses for logging in the log() method
+        self.latest_sft_loss = sft_loss.item()
+        self.latest_kd_loss = kd_loss.item()
+
         if return_outputs:
             return (total_loss,) + sft_loss_outputs[1:]
         else:
             return total_loss
+
+    def log(self, logs: Dict[str, float]) -> None:
+        """
+        Override log to inject SFT and KD losses.
+        """
+        if hasattr(self, "latest_sft_loss"):
+            logs["loss/sft_loss"] = self.latest_sft_loss
+        if hasattr(self, "latest_kd_loss"):
+            logs["loss/kd_loss"] = self.latest_kd_loss
+        super().log(logs)

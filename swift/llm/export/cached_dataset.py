@@ -18,6 +18,8 @@ class ExportCachedDataset(SwiftSft):
     def __init__(self, args: Optional[Union[List[str], ExportArguments]] = None) -> None:
         super(SwiftSft, self).__init__(args)
         self.train_msg = {}  # dummy
+        self.teacher_model = None
+        self.teacher_transform = None
         template_cls = TEMPLATE_MAPPING[args.template].template_cls
         if template_cls and template_cls.use_model:
             kwargs = {'return_dummy_model': True}
