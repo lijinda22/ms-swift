@@ -849,10 +849,21 @@ class SftKdTrainer(Seq2SeqTrainer):
         teacher_projected = self.kd_module.teacher_projection(teacher_cls_for_kd.to(self.model.dtype))
         
         kd_loss = self._dino_loss(student_projected, teacher_projected)
-        total_loss = sft_loss + self.kd_loss_weight * kd_loss
-        print(f"KD Loss: {kd_loss.item()}, SFT Loss: {sft_loss.item()}, Total Loss: {total_loss.item()}")
+        
+        # Scale KD loss if SFT loss is scaled (by gradient_accumulation_steps)
+        kd_loss_weighted = self.kd_loss_weight * kd_loss
+        if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
+            kd_loss_weighted = kd_loss_weighted / self.args.gradient_accumulation_steps
+            
+        total_loss = sft_loss + kd_loss_weighted
+        
         # Save losses for logging in the log() method
-        self.latest_sft_loss = sft_loss.item()
+        # Restore SFT loss to unscaled value for logging consistency
+        if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
+             self.latest_sft_loss = sft_loss.item() * self.args.gradient_accumulation_steps
+        else:
+             self.latest_sft_loss = sft_loss.item()
+             
         self.latest_kd_loss = kd_loss.item()
 
         if return_outputs:

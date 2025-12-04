@@ -156,6 +156,7 @@ class BaseArguments(
                 and self.model_meta.is_multimodal
                 and not self.streaming
                 and not self.packing
+                and not self.cached_dataset # Disable lazy_tokenize if cached_dataset is used
             ):
                 self.lazy_tokenize = True
             else:
@@ -166,6 +167,8 @@ class BaseArguments(
                 raise ValueError("Packing and lazy_tokenize are incompatible.")
             if self.streaming:
                 raise ValueError("Streaming and lazy_tokenize are incompatible.")
+            if self.cached_dataset:
+                 raise ValueError("Cached dataset and lazy_tokenize are incompatible.")
 
     def _init_custom_register(self) -> None:
         """Register custom .py file to datasets"""
