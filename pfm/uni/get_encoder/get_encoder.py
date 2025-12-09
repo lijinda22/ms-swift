@@ -40,18 +40,18 @@ def get_encoder_uni():
     return tile_encoder
 
 
-def get_eval_transforms_uni2(img_resize: int = 224):
-    """
-    Get the evaluation transforms for UNI2.
-    """
-    transform = transforms.Compose(
-        [
-            transforms.Resize(img_resize),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ]
-    )
-    return transform
+# def get_eval_transforms_uni2(img_resize: int = 224):
+#     """
+#     Get the evaluation transforms for UNI2.
+#     """
+#     transform = transforms.Compose(
+#         [
+#             transforms.Resize(img_resize),
+#             transforms.ToTensor(),
+#             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+#         ]
+#     )
+#     return transform
 
 
 def get_encoder_uni2():

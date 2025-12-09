@@ -678,13 +678,19 @@ class McqORM(ORM):
 
         Args:
             completions (list[str]): Generated outputs from the model.
-            solution (list[str]): Ground truth solutions.
+            solution (list[str]): Ground truth solution.
+            **kwargs: Can contain 'task' list for multi-task support.
 
         Returns:
             list[float]: Reward scores (1.0 for a match, 0.0 for no match).
         """
+        tasks = kwargs.get("task", [None] * len(completions))
         rewards = []
-        for pred, sol in zip(completions, solution):
+        for pred, sol, t in zip(completions, solution, tasks):
+            if t not in ['mcq', 'cls']:
+                rewards.append(None)
+                continue
+
             # Extract answer from solution
             sol_match = re.search(r"<answer>(.*?)</answer>", sol, re.DOTALL)
             ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
@@ -702,15 +708,215 @@ class McqORM(ORM):
         return rewards
 
 
+class VqaBleuReward(ORM):
+    """
+    An ORM for evaluating VQA tasks using BLEU-4 score.
+    """
+
+    def __init__(self):
+        try:
+            import jieba
+            from nltk.translate.bleu_score import SmoothingFunction
+        except ImportError:
+            raise ImportError(
+                "jieba and nltk are required for VqaBleuReward. "
+                "Please install them using 'pip install jieba nltk'."
+            )
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        import jieba
+        from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
+
+        tasks = kwargs.get("task", [None] * len(completions))
+        rewards = []
+        for pred, sol, t in zip(completions, solution, tasks):
+            if t != 'vqa':
+                rewards.append(None)
+                continue
+
+            # Extract content from <answer> tags if present
+            sol_match = re.search(r"<answer>(.*?)</answer>", sol, re.DOTALL)
+            reference_text = sol_match.group(1).strip() if sol_match else sol.strip()
+
+            pred_match = re.search(r"<answer>(.*?)</answer>", pred, re.DOTALL)
+            hypothesis_text = pred_match.group(1).strip() if pred_match else pred.strip()
+
+            # Tokenize using jieba
+            hypothesis = list(jieba.cut(hypothesis_text))
+            reference = list(jieba.cut(reference_text))
+
+            if not hypothesis or not reference:
+                rewards.append(0.0)
+                continue
+
+            # Calculate BLEU-4
+            # weights defaults to (0.25, 0.25, 0.25, 0.25) which is BLEU-4
+            bleu_val = sentence_bleu(
+                [reference],
+                hypothesis,
+                smoothing_function=SmoothingFunction().method3
+            )
+            rewards.append(bleu_val)
+        return rewards
+
+
+
+class GeneralAccuracyReward(ORM):
+    """
+    A unified ORM that dispatches to specific accuracy rewards based on the task type.
+    - 'mcq' / 'cls': Uses McqORM (exact string match).
+    - 'vqa': Uses VqaBleuReward (BLEU-4 score).
+    """
+    def __init__(self, vqa_mode='bleu'):
+        self.mcq_orm = McqORM()
+        if vqa_mode == 'bert':
+            self.vqa_orm = VqaBertReward()
+        else:
+            self.vqa_orm = VqaBleuReward()
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        tasks = kwargs.get("task", [None] * len(completions))
+        rewards = []
+        
+        # We need to process item by item because they might be different tasks
+        # But ORMs usually take lists. 
+        # For efficiency, we can split indices, but for simplicity in this loop implementation:
+        
+        # Actually, the underlying ORMs are implemented to return None if task doesn't match.
+        # So we can just call both and coalesce the results? 
+        # No, because VqaBleuReward might be expensive to run on everything if we passed the whole list.
+        # Better to iterate.
+        
+        for i, (pred, sol, t) in enumerate(zip(completions, solution, tasks)):
+            if t in ['mcq', 'cls']:
+                # Call McqORM for single item
+                # Wrappers to match list signature
+                res = self.mcq_orm([pred], [sol], task=[t])
+                rewards.append(res[0])
+            elif t == 'vqa':
+                # Call VqaBleuReward for single item
+                res = self.vqa_orm([pred], [sol], task=[t])
+                rewards.append(res[0])
+            else:
+                rewards.append(None)
+                
+        return rewards
+
+
+class VqaBertReward(ORM):
+    """
+    An ORM for evaluating VQA tasks using BERT cosine similarity (PubMedBERT).
+    """
+
+    def __init__(self, model_name_or_path="/data/ckpt/pubmedbert-base-embeddings/"):
+        self.model_name = model_name_or_path
+        self.tokenizer = None
+        self.model = None
+
+    d: float = None  # Placeholder for single line replacement if needed, but not used here.
+
+    _global_model_cache = {}
+
+    def _load_model(self):
+        if self.model_name in VqaBertReward._global_model_cache:
+            self.tokenizer, self.model = VqaBertReward._global_model_cache[self.model_name]
+        else:
+            from transformers import AutoTokenizer, AutoModel
+            import torch
+            
+            print(f"Loading BERT model for reward: {self.model_name}...")
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.model = AutoModel.from_pretrained(self.model_name)
+            if torch.cuda.is_available():
+                self.model = self.model.cuda()
+            
+            VqaBertReward._global_model_cache[self.model_name] = (self.tokenizer, self.model)
+            
+        # Set instance variables to point to cached objects
+        self.tokenizer, self.model = VqaBertReward._global_model_cache[self.model_name]
+
+    @staticmethod
+    def meanpooling(output, mask):
+        import torch
+        embeddings = output[0]
+        mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
+        return torch.sum(embeddings * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        import torch
+        import torch.nn.functional as F
+
+        tasks = kwargs.get("task", [None] * len(completions))
+        
+        # Check if we have any VQA tasks before loading model/processing
+        has_vqa = any(t == 'vqa' for t in tasks)
+        if not has_vqa:
+            return [None] * len(completions)
+
+        self._load_model()
+        
+        rewards = []
+        for pred, sol, t in zip(completions, solution, tasks):
+            if t != 'vqa':
+                rewards.append(None)
+                continue
+            
+            # Extract content from <answer> tags
+            sol_match = re.search(r"<answer>(.*?)</answer>", sol, re.DOTALL)
+            reference_text = sol_match.group(1).strip() if sol_match else sol.strip()
+
+            pred_match = re.search(r"<answer>(.*?)</answer>", pred, re.DOTALL)
+            hypothesis_text = pred_match.group(1).strip() if pred_match else pred.strip()
+
+            # Calculate BERT similarity
+            # Prepare inputs
+            sentences = [reference_text, hypothesis_text]
+            encoded_input = self.tokenizer(sentences, padding=True, truncation=True, return_tensors='pt')
+            
+            if torch.cuda.is_available():
+                encoded_input = {k: v.cuda() for k, v in encoded_input.items()}
+
+            with torch.no_grad():
+                model_output = self.model(**encoded_input)
+
+            # Pooling and Similarity
+            sentence_embeddings = self.meanpooling(model_output, encoded_input['attention_mask'])
+            sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
+            similarity = F.cosine_similarity(sentence_embeddings[0].unsqueeze(0), sentence_embeddings[1].unsqueeze(0))
+            
+            rewards.append(similarity.item())
+        return rewards
+
+
+class AccuracyBleuReward(GeneralAccuracyReward):
+    """
+    Unified accuracy reward using BLEU-4 for VQA tasks.
+    """
+    def __init__(self):
+        super().__init__(vqa_mode='bleu')
+
+class AccuracyBertReward(GeneralAccuracyReward):
+    """
+    Unified accuracy reward using BERT similarity for VQA tasks.
+    """
+    def __init__(self):
+        super().__init__(vqa_mode='bert')
+
+
 # A registry mapping names to their corresponding ORM classes.
 orms = {
     "toolbench": ReactORM,
     "math": MathORM,
-    "accuracy": MathAccuracy,
     "format": Format,
     "react_format": ReActFormat,
     "cosine": CosineReward,
     "repetition": RepetitionPenalty,
     "soft_overlong": SoftOverlong,
+    "math_accuracy": MathAccuracy,
     "mcq": McqORM,
+    "vqa_bleu": VqaBleuReward,
+    "vqa_bert": VqaBertReward,
+    "accuracy": AccuracyBleuReward,      # Default to BLEU
+    "accuracy_bleu": AccuracyBleuReward, # Explicit BLEU
+    "accuracy_bert": AccuracyBertReward, # Explicit BERT
 }

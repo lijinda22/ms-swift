@@ -1,9 +1,9 @@
 # /data/ljd/VLM-R1/dataset/rl/pathgen_mcq_rl.jsonl
 # 需要有 sft/cpt+sft/cpt+sft_distillation + RL 三种
 # SFT+RL
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=3 \
 swift rollout \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft/v1-20251122-120152/checkpoint-1246-merged \
+    --model /data/ckpt/Qwen3-VL-2B-Instruct \
     --vllm_data_parallel_size 1 \
     --vllm_max_lora_rank 16 \
     --vllm_gpu_memory_utilization 0.95 \
@@ -14,8 +14,8 @@ echo "Waiting 30s for vLLM server to start..."
 sleep 40
 echo "Starting RLHF training..."
 
-CUDA_VISIBLE_DEVICES=1,2,3 \
-NPROC_PER_NODE=3 \
+CUDA_VISIBLE_DEVICES=4,5 \
+NPROC_PER_NODE=2 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
@@ -24,9 +24,9 @@ MASTER_PORT=29514 \
 no_proxy="localhost,127.0.0.1" \
 swift rlhf \
     --rlhf_type grpo \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft/v1-20251122-120152/checkpoint-1246-merged \
-    --reward_funcs mcq format \
-    --reward_weights 1 0.1 \
+    --model /data/ckpt/Qwen3-VL-2B-Instruct \
+    --reward_funcs format accuracy_bleu \
+    --reward_weights 0.2 1 \
     --use_vllm true \
     --vllm_mode server \
     --vllm_server_host 127.0.0.1 \
@@ -37,10 +37,10 @@ swift rlhf \
     --lora_alpha 16 \
     --target_modules all-linear \
     --torch_dtype bfloat16 \
-    --dataset "/data/ljd/VLM-R1/dataset/rl/pathgen_mcq_rl.jsonl" \
+    --dataset "/data/ljd/VLM-R1/dataset/rl/processed/train_vqa_150570.jsonl" \
     --load_from_cache_file true \
     --max_completion_length 2048 \
-    --max_steps 500 \
+    --num_train_epochs 1 \
     --per_device_train_batch_size 12 \
     --per_device_eval_batch_size 12 \
     --learning_rate 1e-6 \
@@ -49,11 +49,11 @@ swift rlhf \
     --eval_strategy 'steps' \
     --eval_steps 100 \
     --save_steps 100 \
-    --save_total_limit 2 \
-    --logging_steps 10 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft_RL \
+    --save_total_limit 3 \
+    --logging_steps 2 \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_grpo_vqa \
     --warmup_ratio 0.01 \
-    --dataloader_num_workers 6 \
+    --dataloader_num_workers 8 \
     --num_generations 24 \
     --temperature 1.0 \
     --system 'examples/train/grpo/prompt.txt' \
@@ -61,10 +61,10 @@ swift rlhf \
     --log_completions true \
     --attn_impl flash_attention_2 \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft_RL/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_grpo_vqa/logs \
     --num_iterations 1 \
     --async_generate false \
     --beta 0.001 \
     --max_grad_norm 1.0 
 
-# num_train_epochs 1
+# max_steps

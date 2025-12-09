@@ -607,7 +607,7 @@ class SftKdTrainer(Seq2SeqTrainer):
     def _kd_data_collator(self, batch: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """
         KD Data Collator:
-        仅负责从 batch 中提取预处理好的 'teacher_pixel_values' 并堆叠。
+        仅负责从 batch 中提取预处理好的 'teacher_pixel_values' 并堆叠 
         """
         # 1. 调用原始 collator 处理 Student 的输入
         # 注意：如果开启 packing，这里的 batch 已经是 packed 过的（但我们的自定义字段可能被丢弃）
