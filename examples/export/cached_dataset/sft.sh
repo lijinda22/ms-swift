@@ -94,8 +94,7 @@ swift sft \
 
 
 # cpt+sft, distillation
-
-KD_LOSS_WEIGHT=0.3 \
+KD_LOSS_WEIGHT=0.2 \
 NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
@@ -121,7 +120,7 @@ swift sft \
     --dataloader_num_workers 4 \
     --dataset_num_proc 2 \
     --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_w${KD_LOSS_WEIGHT} \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_mse_patch_w${KD_LOSS_WEIGHT} \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -134,10 +133,13 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_w${KD_LOSS_WEIGHT}/logs \
-    --kd_teacher_model_type conchv1_5 \
-    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin \
-    --kd_loss_weight ${KD_LOSS_WEIGHT}
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_mse_patch_w${KD_LOSS_WEIGHT}/logs \
+    --kd_teacher_model_type conchv1_5 conch uni uni2 \
+    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
+    --kd_loss_weight ${KD_LOSS_WEIGHT} \
+    --kd_loss_type mse \
+    --kd_token_strategy patch_mse \
+    --kd_weight_strategy similarity_weighted
 
 
 # SFT, distillation test 仅用于调试

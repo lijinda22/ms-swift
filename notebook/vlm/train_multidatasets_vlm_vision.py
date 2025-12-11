@@ -171,8 +171,8 @@ def main():
             print(f"Dataset {name}: No feature directory found.")
             continue
             
-        models = [f.replace(".pt", "") for f in os.listdir(train_feat_dir) if f.endswith(".pt")]
-        
+        # models = [f.replace(".pt", "") for f in os.listdir(train_feat_dir) if f.endswith(".pt")]
+        models = ["lingshu-32b"]
         if not models:
              print(f"Dataset {name}: No models found.")
              continue

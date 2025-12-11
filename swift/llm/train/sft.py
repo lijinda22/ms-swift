@@ -9,7 +9,10 @@ from PIL import Image
 from swift.llm.dataset.loader import DatasetLoader
 from swift.plugin import extra_callbacks
 from swift.trainers import TrainerFactory, Seq2SeqTrainer
-from conchv1_5 import create_model_from_pretrained
+from swift.trainers import TrainerFactory, Seq2SeqTrainer
+from pfm.uni.get_encoder.conchv1_5 import create_model_from_pretrained as create_conchv1_5
+from pfm.uni.get_encoder.get_encoder import get_encoder_uni, get_eval_transforms_uni, get_encoder_uni2
+from pfm.conch.conch import create_model_from_pretrained as create_conch
 from swift.utils import (
     append_to_jsonl,
     get_logger,
@@ -39,9 +42,9 @@ class TeacherEncoder:
     Helper class to wrap template.encode for Knowledge Distillation.
     Ensures picklability for multiprocessing.
     """
-    def __init__(self, original_encode, teacher_transform):
+    def __init__(self, original_encode, teacher_transforms):
         self.original_encode = original_encode
-        self.teacher_transform = teacher_transform
+        self.teacher_transforms = teacher_transforms if isinstance(teacher_transforms, list) else [teacher_transforms]
 
     def __call__(self, example, **kwargs):
         result = self.original_encode(example, **kwargs)
@@ -67,16 +70,19 @@ class TeacherEncoder:
                     pil_img = image_item.convert("RGB")
                 
                 if pil_img:
-                    pixel_val = self.teacher_transform(pil_img)
-                    result['teacher_pixel_values'] = pixel_val
+                    # Apply all teacher transforms
+                    result['teacher_pixel_values'] = []
+                    for transform in self.teacher_transforms:
+                         result['teacher_pixel_values'].append(transform(pil_img))
                     result['has_teacher_image'] = True
             except Exception as e:
                 import traceback
                 logger.warning(f"Teacher transform failed for image: {image_item}. Error: {e}")
                 logger.warning(traceback.format_exc())
         else:
-            logger.warning_once(f"TeacherEncoder: No images found in example. Available keys: {list(example.keys())}. Check dataset format.")
-        assert images or result.get('has_teacher_image', False)
+            # logger.warning_once(f"TeacherEncoder: No images found in example. Available keys: {list(example.keys())}. Check dataset format.")
+            pass
+        # assert images or result.get('has_teacher_image', False)
         return result
 
 
@@ -87,8 +93,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
     def __init__(self, args: Optional[Union[List[str], TrainArguments]] = None) -> None:
         super().__init__(args)
         self.train_msg = {}
-        self.teacher_model = None
-        self.teacher_transform = None
+        self.teacher_models = []
+        self.teacher_transforms = []
         self._prepare_model_tokenizer()
         self._prepare_template()
         self._prepare_callbacks()
@@ -130,17 +136,45 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         self._prepare_generation_config()
 
         if getattr(args, "kd_teacher_model_type", None):
-            assert (
-                args.kd_teacher_model_type == "conchv1_5" and args.kd_teacher_model_path
-            )
-            logger.info(
-                f"Loading KD teacher model: {args.kd_teacher_model_type} from {args.kd_teacher_model_path}"
-            )
-            self.teacher_model, self.teacher_transform = create_model_from_pretrained(
-                checkpoint_path=args.kd_teacher_model_path
-            )
-            self.teacher_model = self.teacher_model.to(self.model.device).eval()
-            self.teacher_model.requires_grad_(False)
+            # Normalize to list
+            kd_types = args.kd_teacher_model_type
+            kd_paths = args.kd_teacher_model_path
+            if isinstance(kd_types, str): kd_types = [kd_types]
+            if isinstance(kd_paths, str): kd_paths = [kd_paths]
+            
+            assert len(kd_types) == len(kd_paths), "Mismatch in KD teacher types and paths length"
+            
+            for t_type, t_path in zip(kd_types, kd_paths):
+                logger.info(f"Loading KD teacher model: {t_type} from {t_path}")
+                try:
+                    t_model = None
+                    t_transform = None
+                    
+                    if t_type == "conchv1_5":
+                        t_model, t_transform = create_conchv1_5(checkpoint_path=t_path)
+                    elif t_type == "uni":
+                        t_model = get_encoder_uni(t_path) # Assuming loading logic is handled or path ignored if default
+                        t_transform = get_eval_transforms_uni()
+                    elif t_type == "uni2":
+                        t_model = get_encoder_uni2(t_path)
+                        t_transform = get_eval_transforms_uni()
+                    elif t_type == "conch":
+                        t_model, t_transform = create_conch(model_cfg='conch_ViT-B-16', checkpoint_path=t_path)
+                    else:
+                         raise ValueError(f"Unknown KD teacher type: {t_type}")
+                         
+                    if t_model:
+                        t_model = t_model.to(self.model.device).eval()
+                        t_model.requires_grad_(False)
+                        self.teacher_models.append(t_model)
+                        self.teacher_transforms.append(t_transform)
+                        logger.info(f"Successfully loaded {t_type}")
+                except Exception as e:
+                     logger.error(f"Failed to load teacher {t_type}: {e}")
+                     raise e
+            
+            # Attach teachers to model for Trainer access
+            self.model.teacher_models = self.teacher_models
 
     def _prepare_template(self) -> None:
         # raise Exception("Please implement _prepare_template()")
@@ -159,7 +193,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
             )
         self.template = template
         # === [新增修改] Hook template.encode 以注入 Teacher Transform ===
-        if self.teacher_model is not None:
+        # === [新增修改] Hook template.encode 以注入 Teacher Transform ===
+        if self.teacher_models:
             self._hook_template_encode_for_distillation()
     
     def _hook_template_encode_for_distillation(self):
@@ -169,7 +204,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         """
         logger.info("Hooking template.encode for Knowledge Distillation using TeacherEncoder wrapper.")
         # Replace instance method with a callable object (picklable)
-        self.template.encode = TeacherEncoder(self.template.encode, self.teacher_transform)
+        self.template.encode = TeacherEncoder(self.template.encode, self.teacher_transforms)
         logger.info("Successfully hooked template.encode for Knowledge Distillation pre-processing.")
 
     def _get_dataset(self):

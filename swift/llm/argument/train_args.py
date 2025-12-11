@@ -152,17 +152,29 @@ class TrainArguments(
     early_stop_interval: Optional[int] = None
 
     # --- Knowledge Distillation (KD) Arguments ---
-    kd_teacher_model_type: Optional[str] = field(
+    kd_teacher_model_type: Optional[Union[str, List[str]]] = field(
         default=None,
         metadata={"help": 'Type of the teacher model for ViT KD (e.g., "conchv1_5")'},
     )
-    kd_teacher_model_path: Optional[str] = field(
+    kd_teacher_model_path: Optional[Union[str, List[str]]] = field(
         default=None,
         metadata={"help": "Path to the pretrained weights of the teacher model"},
     )
-    kd_loss_weight: float = field(
+    kd_loss_weight: Union[float, List[float]] = field(
         default=0.02,
         metadata={"help": "Weight for the knowledge distillation loss (w * KD_Loss)"},
+    )
+    kd_loss_type: str = field(
+        default="dino",
+        metadata={"help": "Type of KD loss: 'dino' or 'mse'"},
+    )
+    kd_token_strategy: str = field(
+        default="cls_mean",
+        metadata={"help": "Strategy for token alignment: 'cls_mean' (Teacher CLS vs Student Mean) or 'patch_mse' (Teacher Patch vs Student Patch)"},
+    )
+    kd_weight_strategy: str = field(
+        default="fixed",
+        metadata={"help": "Strategy for combining multi-teacher losses: 'fixed' (use kd_loss_weight list) or 'similarity_weighted' (dynamic based on cosine sim)"},
     )
     kd_projection_dim: Optional[int] = field(
         default=None,
