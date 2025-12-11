@@ -558,8 +558,6 @@ class KnowledgeDistillationModule(nn.Module):
         if self.student_projection.bias is not None:
             torch.nn.init.zeros_(self.student_projection.bias)
 
-        self.register_buffer("center", torch.zeros(1, teacher_hidden_size))
-
 
 class SftKdTrainer(Seq2SeqTrainer):
     """
@@ -592,19 +590,12 @@ class SftKdTrainer(Seq2SeqTrainer):
              self.kd_loss_weights = [self.kd_loss_weights] * len(self.teacher_models)
         
         # Ensure weights match teachers
-        if len(self.kd_loss_weights) < len(self.teacher_models):
-             logger.warning(f"KD weights count ({len(self.kd_loss_weights)}) less than teachers ({len(self.teacher_models)}). Extending with last weight.")
-             self.kd_loss_weights.extend([self.kd_loss_weights[-1]] * (len(self.teacher_models) - len(self.kd_loss_weights)))
-
-        self.kd_loss_type = getattr(sft_args, "kd_loss_type", "dino")
+        assert len(self.kd_loss_weights) == len(self.teacher_models), f"KD weights count ({len(self.kd_loss_weights)}) does not match teachers ({len(self.teacher_models)})."
         self.kd_token_strategy = getattr(sft_args, "kd_token_strategy", "cls_mean")
-        self.kd_weight_strategy = getattr(sft_args, "kd_weight_strategy", "fixed") # fixed or similarity_weighted
+        self.kd_weight_strategy = getattr(sft_args, "kd_weight_strategy", "similarity_weighted") # fixed or similarity_weighted
 
-        self.student_T = sft_args.kd_student_T
-        self.teacher_T = sft_args.kd_teacher_T
-        self.center_momentum = sft_args.kd_center_momentum
         self.student_cls_token_buffer = None
-        self.student_spatial_merge_size = 2  # Default for Qwen2-VL/3-VL
+        self.student_spatial_merge_size = 2  # Default for Qwen2-VL/3-VL 
         self.kd_modules: Optional[nn.ModuleList] = None
         self.original_data_collator = self.data_collator
         self.data_collator = self._kd_data_collator
@@ -774,7 +765,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                 ).to(self.model.device)
                 self.kd_modules.append(kd_mod)
                 
-                logger.info(f"Initialized KD Component for Teacher {i} ({t_model.__class__.__name__}): {student_hidden_size} -> {teacher_hidden_size} ({self.kd_loss_type}, {self.kd_token_strategy})")
+                logger.info(f"Initialized KD Component for Teacher {i} ({t_model.__class__.__name__}): {student_hidden_size} -> {teacher_hidden_size} (MSE, {self.kd_token_strategy})")
                 
             except Exception as e:
                 logger.error(
@@ -791,25 +782,6 @@ class SftKdTrainer(Seq2SeqTrainer):
         else:
             logger.warning("Model already has 'kd_adapters'. Using existing one (resume?).")
             self.kd_modules = self.model.kd_adapters
-
-    def _dino_loss(self, student_output, teacher_output, kd_adapter):
-        # DINO损失计算
-        student_out = F.softmax(student_output / self.student_T, dim=-1)
-        teacher_out = (teacher_output - kd_adapter.center) / self.teacher_T
-        teacher_out = F.softmax(teacher_out, dim=-1).detach()
-        kd_loss = -(teacher_out * torch.log(student_out + 1e-9)).sum(dim=-1).mean()
-        
-        # EMA Center Update (handled here or outside? Usually outside during forward)
-        # But for strictly loss calculation, we just read center. 
-        # Center update usually happens in the module forward or a separate step.
-        # existing implementation didn't update center here? 
-        # Ah, the original code likely updated center in forward pass of KD module.
-        # But we are manually forwarding projections.
-        # We need to ensure center is updated.
-        if self.training:
-           kd_adapter.update_center(teacher_output)
-           
-        return kd_loss
 
 
     def compute_loss(
@@ -931,13 +903,10 @@ class SftKdTrainer(Seq2SeqTrainer):
                         s_proj = s_mean_proj
                         t_proj = t_cls_proj
                         
-                        if self.kd_loss_type == "dino":
-                            loss_k = self._dino_loss(s_proj, t_proj, t_adapter)
-                        else: # mse
-                            # L2 Normalize for stability equivalent to Cosine Distance
-                            s_proj = F.normalize(s_proj, p=2, dim=-1)
-                            t_proj = F.normalize(t_proj, p=2, dim=-1)
-                            loss_k = F.mse_loss(s_proj, t_proj)
+                        # MSE (Normalized)
+                        s_proj = F.normalize(s_proj, p=2, dim=-1)
+                        t_proj = F.normalize(t_proj, p=2, dim=-1)
+                        loss_k = F.mse_loss(s_proj, t_proj)
                             
                         loss_sum_for_teacher += loss_k
                         
@@ -946,11 +915,10 @@ class SftKdTrainer(Seq2SeqTrainer):
                         # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
                         
                         t_patches_flat = t_feat[num_prefix_tokens:]
+                        print("t_patches_flat.shape", t_patches_flat.shape) 
                         num_patches = t_patches_flat.shape[0]
                         side = int(num_patches**0.5)
-                        if side * side != num_patches:
-                            # Not square? Skip or warn
-                            continue
+                        assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
                             
                         t_patches = t_patches_flat.reshape(side, side, -1).permute(2, 0, 1).unsqueeze(0) # (1, D_t, H, W)
                         
@@ -960,28 +928,21 @@ class SftKdTrainer(Seq2SeqTrainer):
                         # Student H, W from grid.
                         h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
                         
-                        # Interpolate Teacher to Student Feature Map Size
+                        # Interpolate Teacher to Student Feature Map Size 
                         t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
                         t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
-                        
+                        print("t_interp.shape", t_interp.shape)
                         # Verify shape match
-                        if s_feat.shape[0] != t_interp.shape[0]:
-                             continue
-
-                        # Project Student to Teacher Dim
+                        assert s_feat.shape[0] == t_interp.shape[0], f"Student {k} patch count ({s_feat.shape[0]}) does not match Teacher {i} patch count ({t_interp.shape[0]}). Skipping."
+                        # Project Student to Teacher Dim 
                         s_proj = t_adapter.student_projection(s_feat) # (h*w, D_t)
                         t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
                         
                         # Normalized MSE
-                        if self.kd_loss_type == "mse":
-                             s_proj = F.normalize(s_proj, p=2, dim=-1)
-                             t_proj = F.normalize(t_proj, p=2, dim=-1)
+                        s_proj = F.normalize(s_proj, p=2, dim=-1)
+                        t_proj = F.normalize(t_proj, p=2, dim=-1)
 
-                        if self.kd_loss_type == "dino":
-                             loss_k = self._dino_loss(s_proj, t_proj)
-                        else:
-                             loss_k = F.mse_loss(s_proj, t_proj)
-
+                        loss_k = F.mse_loss(s_proj, t_proj)
                         loss_sum_for_teacher += loss_k
                 
                 # Average over batch
@@ -995,24 +956,29 @@ class SftKdTrainer(Seq2SeqTrainer):
             # --- Aggregation ---
             total_kd_loss = 0.0
             
-            if self.kd_weight_strategy == "similarity_weighted":
+            # User Requirement: 
+            # If cls_mean -> Fixed Weighting
+            # If patch_mse -> Adaptive (Similarity Weighted) Weighting
+            
+            if self.kd_token_strategy == "patch_mse":
+                # Adaptive / Similarity Weighted
                 # Softmax over similarity scores
                 sim_tensor = torch.stack(teacher_sim_scores) if teacher_sim_scores else torch.tensor([])
                 if sim_tensor.numel() > 0:
                     weights = F.softmax(sim_tensor, dim=0) # [Num_Teachers]
-                    # Log weights periodically?
-                    # logger.info(f"Dynamic Weights: {weights.tolist()}") 
                     for i, loss in enumerate(teacher_raw_losses):
                         total_kd_loss += weights[i] * loss
                 
                 # Apply Global Scale
-                # In this mode, kd_loss_weight[0] is treated as the global scale
                 global_scale = self.kd_loss_weights[0] if self.kd_loss_weights else 0.0
                 total_kd_loss *= global_scale
                 
-            else: # fixed weighting
+            else: 
+                # Fixed weighting (cls_mean or others)
                 for i, loss in enumerate(teacher_raw_losses):
-                     total_kd_loss += self.kd_loss_weights[i] * loss
+                    # Use individual weights if provided, or broadcast global
+                    # self.kd_loss_weights IS already a list of len(teachers)
+                    total_kd_loss += self.kd_loss_weights[i] * loss
 
             kd_loss_weighted = total_kd_loss
             if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
@@ -1020,6 +986,12 @@ class SftKdTrainer(Seq2SeqTrainer):
             
             total_loss = sft_loss + kd_loss_weighted
         
+        except Exception as e:
+            from swift.utils import get_logger
+            logger = get_logger()
+            logger.error(f"KD calculation failed with error: {e}. Fallback to SFT loss.")
+            return sft_loss_outputs if return_outputs else sft_loss
+
         # Log SFT and KD loss
         if self.model.training:
            sft_loss_scalar = sft_loss.item()

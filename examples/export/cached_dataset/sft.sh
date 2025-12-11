@@ -1,9 +1,9 @@
 swift export \
     --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/merged.jsonl" \
+    --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/merged_334674.jsonl" \
     --max_length 8192 \
     --dataset_num_proc 8 \
-    --split_dataset_ratio 0.01 \
+    --split_dataset_ratio 0.05 \
     --to_cached_dataset true \
     --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset
 

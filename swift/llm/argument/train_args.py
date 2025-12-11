@@ -1,7 +1,7 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 import os
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Literal, Optional, Union, List
 
 from transformers import Seq2SeqTrainingArguments
 from transformers.utils.versions import require_version
@@ -161,19 +161,15 @@ class TrainArguments(
         metadata={"help": "Path to the pretrained weights of the teacher model"},
     )
     kd_loss_weight: Union[float, List[float]] = field(
-        default=0.02,
+        default=0.2,
         metadata={"help": "Weight for the knowledge distillation loss (w * KD_Loss)"},
-    )
-    kd_loss_type: str = field(
-        default="dino",
-        metadata={"help": "Type of KD loss: 'dino' or 'mse'"},
     )
     kd_token_strategy: str = field(
         default="cls_mean",
         metadata={"help": "Strategy for token alignment: 'cls_mean' (Teacher CLS vs Student Mean) or 'patch_mse' (Teacher Patch vs Student Patch)"},
     )
     kd_weight_strategy: str = field(
-        default="fixed",
+        default="similarity_weighted", # 只使用similarity_weighted
         metadata={"help": "Strategy for combining multi-teacher losses: 'fixed' (use kd_loss_weight list) or 'similarity_weighted' (dynamic based on cosine sim)"},
     )
     kd_projection_dim: Optional[int] = field(
@@ -181,16 +177,6 @@ class TrainArguments(
         metadata={
             "help": "Projection dimension for CLS token alignment. Defaults to student ViT hidden size."
         },
-    )
-    kd_student_T: float = field(
-        default=0.1, metadata={"help": "Temperature for student CLS token in DINO loss"}
-    )
-    kd_teacher_T: float = field(
-        default=0.05,
-        metadata={"help": "Temperature for teacher CLS token in DINO loss"},
-    )
-    kd_center_momentum: float = field(
-        default=0.9, metadata={"help": "Momentum for DINO loss center update"}
     )
     # -------------------------------------------------
 
