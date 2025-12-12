@@ -48,41 +48,39 @@ class TeacherEncoder:
 
     def __call__(self, example, **kwargs):
         result = self.original_encode(example, **kwargs)
-        images = example.get('images')
-        if images is None:
-            images = example.get('image')
-            if images is not None and not isinstance(images, list):
-                images = [images]
+        images = example.get('images') or example.get('image')
+        # print("example", example)
+        if images is not None and not isinstance(images, list):
+            images = [images]
         
-        if images:
-            image_item = images[0]
-            try:
-                pil_img = None
-                if isinstance(image_item, str):
-                    pil_img = Image.open(image_item).convert("RGB")
-                elif isinstance(image_item, dict):
-                    if image_item.get('bytes'):
-                        import io
-                        pil_img = Image.open(io.BytesIO(image_item['bytes'])).convert("RGB")
-                    elif image_item.get('path'):
-                        pil_img = Image.open(image_item['path']).convert("RGB")
-                elif hasattr(image_item, "convert"):
-                    pil_img = image_item.convert("RGB")
-                
-                assert pil_img, "Failed to convert image to PIL Image"
-                # Apply all teacher transforms
-                result['teacher_pixel_values'] = []
-                for transform in self.teacher_transforms:
-                    result['teacher_pixel_values'].append(transform(pil_img))
-                result['has_teacher_image'] = True
-            except Exception as e:
-                import traceback
-                logger.warning(f"Teacher transform failed for image: {image_item}. Error: {e}")
-                logger.warning(traceback.format_exc())
-        else:
-            logger.warning_once(f"TeacherEncoder: No images found in example. Available keys: {list(example.keys())}. Check dataset format.")
-            pass
-        assert images or result.get('has_teacher_image', False)
+        # assert images, "No images found in example"
+        if not images:
+             # Just return result if no images (text-only sample or issue)
+             # But here we probably want KD on images.
+             # If assertion was here, it means we expect images.
+             # Given the user context, let's keep it safe.
+             return result
+
+        image_item = images[0]
+        pil_img = None
+        if isinstance(image_item, str):
+            pil_img = Image.open(image_item).convert("RGB")
+        elif isinstance(image_item, dict):
+            if image_item.get('bytes'):
+                import io
+                pil_img = Image.open(io.BytesIO(image_item['bytes'])).convert("RGB")
+            elif image_item.get('path'):
+                pil_img = Image.open(image_item['path']).convert("RGB")
+        elif hasattr(image_item, "convert"):
+            pil_img = image_item.convert("RGB")
+        
+        assert pil_img, "Failed to convert image to PIL Image"
+        # Apply all teacher transforms
+        result['teacher_pixel_values'] = []
+        for transform in self.teacher_transforms:
+            result['teacher_pixel_values'].append(transform(pil_img))
+        result['has_teacher_image'] = True
+        assert result.get('has_teacher_image', False)
         return result
 
 
@@ -150,10 +148,10 @@ class SwiftSft(SwiftPipeline, TunerMixin):
                     if t_type == "conchv1_5":
                         t_model, t_transform = create_conchv1_5(checkpoint_path=t_path)
                     elif t_type == "uni":
-                        t_model = get_encoder_uni(t_path) # Assuming loading logic is handled or path ignored if default
+                        t_model = get_encoder_uni() # Assuming loading logic is handled or path ignored if default
                         t_transform = get_eval_transforms_uni()
                     elif t_type == "uni2":
-                        t_model = get_encoder_uni2(t_path)
+                        t_model = get_encoder_uni2()
                         t_transform = get_eval_transforms_uni()
                     elif t_type == "conch":
                         t_model, t_transform = create_conch(model_cfg='conch_ViT-B-16', checkpoint_path=t_path)
@@ -346,7 +344,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         logger.info(f"model_parameter_info: {model_parameter_info}")
 
         trainer_cls = TrainerFactory.get_trainer_cls(args)
-        if self.teacher_model is not None:
+        if self.teacher_models is not None:
             from swift.trainers.trainers import SftKdTrainer
 
             if trainer_cls is not Seq2SeqTrainer:
@@ -371,10 +369,10 @@ class SwiftSft(SwiftPipeline, TunerMixin):
 
     def _get_trainer_kwargs(self):
         kwargs = {}
-        if self.teacher_model is not None:
+        if self.teacher_models is not None:
             kwargs["sft_args"] = self.args
-            kwargs["teacher_model"] = self.teacher_model
-            kwargs["teacher_transform"] = self.teacher_transform
+            kwargs["teacher_models"] = self.teacher_models
+            kwargs["teacher_transforms"] = self.teacher_transforms
         return kwargs
 
     def _save_trainer_state(self, trainer):

@@ -569,8 +569,8 @@ class SftKdTrainer(Seq2SeqTrainer):
         self,
         *args,
         sft_args: "TrainArguments",
-        teacher_model: Optional[nn.Module] = None,
-        teacher_transform: Optional[Callable] = None,
+        teacher_models: Optional[List[nn.Module]] = None,
+        teacher_transforms: Optional[List[Callable]] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -581,17 +581,16 @@ class SftKdTrainer(Seq2SeqTrainer):
         # Check if model has attached teachers (from sft.py)
         if hasattr(self.model, "teacher_models") and self.model.teacher_models:
              self.teacher_models = self.model.teacher_models
-        elif teacher_model is not None:
-             self.teacher_models = [teacher_model.eval()]
+        elif teacher_models is not None:
+             self.teacher_models = teacher_models
+        
+        if not self.teacher_models:
+             pass # Warn or handle? For now, allowing empty for non-KD flows if compatible.
         
         # Parse weights
-        self.kd_loss_weights = sft_args.kd_loss_weight
-        if not isinstance(self.kd_loss_weights, list):
-             self.kd_loss_weights = [self.kd_loss_weights] * len(self.teacher_models)
+        self.kd_loss_weight = sft_args.kd_loss_weight
         
-        # Ensure weights match teachers
-        assert len(self.kd_loss_weights) == len(self.teacher_models), f"KD weights count ({len(self.kd_loss_weights)}) does not match teachers ({len(self.teacher_models)})."
-        self.kd_token_strategy = getattr(sft_args, "kd_token_strategy", "cls_mean")
+        self.kd_token_strategy = getattr(sft_args, "kd_token_strategy", "patch_mse")
         self.kd_weight_strategy = getattr(sft_args, "kd_weight_strategy", "similarity_weighted") # fixed or similarity_weighted
 
         self.student_cls_token_buffer = None
@@ -612,7 +611,7 @@ class SftKdTrainer(Seq2SeqTrainer):
         # Case 1: CoCa (Conch) - has .visual.trunk
         if hasattr(teacher_model, 'visual') and hasattr(teacher_model.visual, 'trunk'):
             trunk = teacher_model.visual.trunk
-            return teacher_model.embed_dim, getattr(trunk, 'num_prefix_tokens', 1), trunk.forward_features
+            return trunk.embed_dim, getattr(trunk, 'num_prefix_tokens', 1), trunk.forward_features
         
         # Case 2: CONCHVisionTower (Conch V1.5) - has .trunk
         if hasattr(teacher_model, 'trunk'):
@@ -727,6 +726,7 @@ class SftKdTrainer(Seq2SeqTrainer):
         Forward hook to capture the student ViT's global representation.
         Just capture raw output. Post-processing moves to compute_loss.
         """
+        # print("DEBUG: _student_hook fired!")
         if isinstance(output, tuple):
             self.student_cls_token_buffer = output[0]
         else:
@@ -734,47 +734,32 @@ class SftKdTrainer(Seq2SeqTrainer):
 
     def _init_kd_components(self):
         # 初始化知识蒸馏组件
-        try:
-            # For Qwen3-VL, the visual module is at model.model.visual
-            student_vit_module = self.model.model.visual
-            # The output dimension of the visual part is the input to the LM.
-            # We can get this from the visual merger's output features.
-            student_hidden_size = student_vit_module.merger.linear_fc2.out_features
-            # Capture spatial merge size for pooling calculation
-            self.student_spatial_merge_size = getattr(student_vit_module, "spatial_merge_size", 2)
-            
-            student_vit_module.register_forward_hook(self._student_hook)
-            logger.info(
-                f"Registered forward hook on student ViT module: {student_vit_module.__class__.__name__}"
-            )
-        except AttributeError as e:
-            logger.error(
-                f"Failed to find student ViT (model.model.visual) or its components. KD is disabled. Error: {e}"
-            )
-            return
+        # For Qwen3-VL, the visual module is at model.model.visual
+        student_vit_module = self.model.model.visual
+        # The output dimension of the visual part is the input to the LM.
+        # We can get this from the visual merger's output features.
+        student_hidden_size = student_vit_module.merger.linear_fc2.out_features
+        # Capture spatial merge size for pooling calculation
+        self.student_spatial_merge_size = getattr(student_vit_module, "spatial_merge_size", 2)
+        
+        student_vit_module.register_forward_hook(self._student_hook)
+        logger.info(
+            f"Registered forward hook on student ViT module: {student_vit_module.__class__.__name__}"
+        )
 
         self.kd_modules = nn.ModuleList()
         
         for i, t_model in enumerate(self.teacher_models):
-            try:
-                teacher_hidden_size, _, _ = self._get_teacher_info(t_model)
-                
-                kd_mod = KnowledgeDistillationModule(
-                    student_hidden_size=student_hidden_size,
-                    teacher_hidden_size=teacher_hidden_size,
-                ).to(self.model.device)
-                self.kd_modules.append(kd_mod)
-                
-                logger.info(f"Initialized KD Component for Teacher {i} ({t_model.__class__.__name__}): {student_hidden_size} -> {teacher_hidden_size} (MSE, {self.kd_token_strategy})")
-                
-            except Exception as e:
-                logger.error(
-                    f"Failed to get teacher ViT hidden size for teacher {i}. Skipping this teacher. Error: {e}"
-                )
-                self.kd_modules.append(None) # Add placeholder to keep indices aligned
-                self.kd_loss_weights[i] = 0.0 # Disable
-                continue
-
+            teacher_hidden_size, _, _ = self._get_teacher_info(t_model)
+            
+            kd_mod = KnowledgeDistillationModule(
+                student_hidden_size=student_hidden_size,
+                teacher_hidden_size=teacher_hidden_size,
+            ).to(self.model.device)
+            self.kd_modules.append(kd_mod)
+            
+            logger.info(f"Initialized KD Component for Teacher {i} ({t_model.__class__.__name__}): {student_hidden_size} -> {teacher_hidden_size} (MSE, {self.kd_token_strategy})")
+        
         # CRITICAL: Attach to model so optimizer picks up the parameters!
         # We use a distinct name to avoid conflict with existing modules.
         if not hasattr(self.model, "kd_adapters"):
@@ -795,20 +780,31 @@ class SftKdTrainer(Seq2SeqTrainer):
         # Note: Qwen2/3-VL expects 'image_grid_thw'.
         image_grid_thw = inputs.get("image_grid_thw", None)
 
-        self.student_cls_token_buffer = None
         sft_loss_outputs = super().compute_loss(
             model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
         )
         sft_loss = sft_loss_outputs[0]
         
-        if (
-            not self.teacher_models
-            or self.kd_modules is None
-            or teacher_pixel_values is None
-            or self.student_cls_token_buffer is None
-        ):
-            logger.warning_once("KD Error: Missing teacher models, kd_modules, teacher_pixel_values, or student_cls_token_buffer. Skipping KD.")
-            return sft_loss_outputs if return_outputs else sft_loss
+        if not self.teacher_models:
+             # Just skip without warning if no teachers (standard SFT)
+             return sft_loss_outputs if return_outputs else sft_loss
+        
+        if self.kd_modules is None:
+             logger.warning_once("KD Error: kd_modules is None. Initialization failed?")
+             return sft_loss_outputs if return_outputs else sft_loss
+
+        if teacher_pixel_values is None:
+             # Possible if batch has no images or collation failed
+             # Check if we expected images
+             if "pixel_values" in inputs:
+                  logger.warning_once("KD Error: batch has pixel_values but no teacher_pixel_values.")
+             return sft_loss_outputs if return_outputs else sft_loss
+
+        if self.student_cls_token_buffer is None:
+             # Hook didn't fire
+             has_pixels = "pixel_values" in inputs
+             logger.warning_once(f"KD Error: student_cls_token_buffer is None. Hook didn't fire? Has pixels: {has_pixels}")
+             return sft_loss_outputs if return_outputs else sft_loss
         
         # --- Student Feature Processing (Split) ---
         # Qwen3-VL/Qwen2.5-VL output is flattened. We need grid_thw to split.
@@ -818,184 +814,179 @@ class SftKdTrainer(Seq2SeqTrainer):
 
         hidden_states = self.student_cls_token_buffer
         
-        try:
-            split_sizes = (image_grid_thw.to(hidden_states.device).prod(dim=-1) // (self.student_spatial_merge_size ** 2)).tolist()
-            
-            if hidden_states.shape[0] != sum(split_sizes):
-                logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
-                return sft_loss_outputs if return_outputs else sft_loss
-
-            per_image_features = torch.split(hidden_states, split_sizes, dim=0)
-            
-            # Sub-Select student features that correspond to teacher images
-            teacher_indices_tensor = teacher_image_indices.to(hidden_states.device)
-            # list of Tensors
-            student_features_subset = [per_image_features[idx] for idx in teacher_indices_tensor]
-            
-            # --- Loop over teachers ---
-            teacher_raw_losses = []
-            teacher_sim_scores = []
-            
-            for i, (t_model, t_pixels, t_adapter) in enumerate(zip(self.teacher_models, teacher_pixel_values, self.kd_modules)):
-                
-                # Skip invalid/disabled teachers
-                if t_adapter is None:
-                     teacher_raw_losses.append(torch.tensor(0.0, device=self.model.device))
-                     teacher_sim_scores.append(torch.tensor(-100.0, device=self.model.device)) # Low sim for disabled
-                     continue
-
-                # Device check for adapter
-                if t_adapter.student_projection.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
-                if t_adapter.student_projection.weight.device != self.model.device: t_adapter.to(self.model.device)
-                
-                # Teacher Forward
-                # Get correct forward function and handle device/dtype
-                try:
-                    _, num_prefix_tokens, forward_fn = self._get_teacher_info(t_model)
-                    
-                    # Ensure teacher is on correct device/dtype (Global check)
-                    # Use a robust check or just force cast if needed. 
-                    # Assuming checking one parameter is enough proxy.
-                    first_param = next(t_model.parameters(), None)
-                    if first_param is not None and (first_param.dtype != self.model.dtype or first_param.device != self.model.device):
-                         t_model.to(device=self.model.device, dtype=self.model.dtype)
-
-                    t_pixels = t_pixels.to(self.model.device).to(self.model.dtype)
-                    
-                    with torch.no_grad():
-                        t_out = forward_fn(t_pixels) # (B, L_t, D_t)
-                except Exception as e:
-                    logger.warning_once(f"Teacher {i} forward failure: {e}. Skipping.")
-                    teacher_raw_losses.append(torch.tensor(0.0, device=self.model.device))
-                    teacher_sim_scores.append(torch.tensor(-100.0, device=self.model.device))
-                    continue
-                
-                loss_sum_for_teacher = 0.0
-                sim_sum_for_teacher = 0.0
-                valid_sample_count = len(student_features_subset)
-                
-                # Iterate over batch items (aligned with student_features_subset)
-                for k, s_feat in enumerate(student_features_subset):
-                    # s_feat: (Student_Tokens, D_s)
-                    t_feat = t_out[k] # (Teacher_Tokens, D_t)
-                    
-                    # --- Compute Similarity for Weighting (Always usage CLS/GAP comparison) ---
-                    # Student Mean
-                    s_mean = s_feat.mean(dim=0, keepdim=True) # (1, D_s)
-                    # Teacher CLS or Global Rep
-                    if num_prefix_tokens > 0:
-                        t_cls = t_feat[0].unsqueeze(0).to(self.model.dtype) # (1, D_t)
-                    else:
-                        # Fallback to Mean if no CLS
-                        t_cls = t_feat.mean(dim=0, keepdim=True).to(self.model.dtype)
-
-                    # Project Student Mean to Teacher Dim for Sim Calc
-                    s_mean_proj = t_adapter.student_projection(s_mean)
-                    t_cls_proj = t_adapter.teacher_projection(t_cls)
-                    
-                    # Cosine Sim
-                    sim = F.cosine_similarity(s_mean_proj, t_cls_proj, dim=-1) # (1,)
-                    sim_sum_for_teacher += sim
-                    
-                    # --- Strategy Dispatch for LOSS ---
-                    if self.kd_token_strategy == "cls_mean":
-                        # Reuse Projected features
-                        s_proj = s_mean_proj
-                        t_proj = t_cls_proj
-                        
-                        # MSE (Normalized)
-                        s_proj = F.normalize(s_proj, p=2, dim=-1)
-                        t_proj = F.normalize(t_proj, p=2, dim=-1)
-                        loss_k = F.mse_loss(s_proj, t_proj)
-                            
-                        loss_sum_for_teacher += loss_k
-                        
-                    elif self.kd_token_strategy == "patch_mse":
-                        # Teacher Patch: Interpolate to Student quantity
-                        # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
-                        
-                        t_patches_flat = t_feat[num_prefix_tokens:]
-                        print("t_patches_flat.shape", t_patches_flat.shape) 
-                        num_patches = t_patches_flat.shape[0]
-                        side = int(num_patches**0.5)
-                        assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
-                            
-                        t_patches = t_patches_flat.reshape(side, side, -1).permute(2, 0, 1).unsqueeze(0) # (1, D_t, H, W)
-                        
-                        grid_idx = teacher_indices_tensor[k]
-                        t, h, w = image_grid_thw[grid_idx]
-                        
-                        # Student H, W from grid.
-                        h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
-                        
-                        # Interpolate Teacher to Student Feature Map Size 
-                        t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
-                        t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
-                        print("t_interp.shape", t_interp.shape)
-                        # Verify shape match
-                        assert s_feat.shape[0] == t_interp.shape[0], f"Student {k} patch count ({s_feat.shape[0]}) does not match Teacher {i} patch count ({t_interp.shape[0]}). Skipping."
-                        # Project Student to Teacher Dim 
-                        s_proj = t_adapter.student_projection(s_feat) # (h*w, D_t)
-                        t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
-                        
-                        # Normalized MSE
-                        s_proj = F.normalize(s_proj, p=2, dim=-1)
-                        t_proj = F.normalize(t_proj, p=2, dim=-1)
-
-                        loss_k = F.mse_loss(s_proj, t_proj)
-                        loss_sum_for_teacher += loss_k
-                
-                # Average over batch
-                if valid_sample_count > 0:
-                     loss_sum_for_teacher /= valid_sample_count
-                     sim_sum_for_teacher /= valid_sample_count
-                
-                teacher_raw_losses.append(loss_sum_for_teacher)
-                teacher_sim_scores.append(sim_sum_for_teacher)
-
-            # --- Aggregation ---
-            total_kd_loss = 0.0
-            
-            # User Requirement: 
-            # If cls_mean -> Fixed Weighting
-            # If patch_mse -> Adaptive (Similarity Weighted) Weighting
-            
-            if self.kd_token_strategy == "patch_mse":
-                # Adaptive / Similarity Weighted
-                # Softmax over similarity scores
-                sim_tensor = torch.stack(teacher_sim_scores) if teacher_sim_scores else torch.tensor([])
-                if sim_tensor.numel() > 0:
-                    weights = F.softmax(sim_tensor, dim=0) # [Num_Teachers]
-                    for i, loss in enumerate(teacher_raw_losses):
-                        total_kd_loss += weights[i] * loss
-                
-                # Apply Global Scale
-                global_scale = self.kd_loss_weights[0] if self.kd_loss_weights else 0.0
-                total_kd_loss *= global_scale
-                
-            else: 
-                # Fixed weighting (cls_mean or others)
-                for i, loss in enumerate(teacher_raw_losses):
-                    # Use individual weights if provided, or broadcast global
-                    # self.kd_loss_weights IS already a list of len(teachers)
-                    total_kd_loss += self.kd_loss_weights[i] * loss
-
-            kd_loss_weighted = total_kd_loss
-            if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
-                kd_loss_weighted = kd_loss_weighted / self.args.gradient_accumulation_steps
-            
-            total_loss = sft_loss + kd_loss_weighted
+        split_sizes = (image_grid_thw.to(hidden_states.device).prod(dim=-1) // (self.student_spatial_merge_size ** 2)).tolist()
         
-        except Exception as e:
-            from swift.utils import get_logger
-            logger = get_logger()
-            logger.error(f"KD calculation failed with error: {e}. Fallback to SFT loss.")
+        if hidden_states.shape[0] != sum(split_sizes):
+            logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
             return sft_loss_outputs if return_outputs else sft_loss
 
+        per_image_features = torch.split(hidden_states, split_sizes, dim=0)
+        
+        # Sub-Select student features that correspond to teacher images
+        teacher_indices_tensor = teacher_image_indices.to(hidden_states.device)
+        # list of Tensors
+        student_features_subset = [per_image_features[idx] for idx in teacher_indices_tensor]
+        
+        # --- Loop over teachers ---
+        teacher_raw_losses = []
+        teacher_sim_scores = []
+        
+        for i, (t_model, t_pixels, t_adapter) in enumerate(zip(self.teacher_models, teacher_pixel_values, self.kd_modules)):
+            
+            # Skip invalid/disabled teachers
+            if t_adapter is None:
+                teacher_raw_losses.append(torch.tensor(0.0, device=self.model.device))
+                teacher_sim_scores.append(torch.tensor(-100.0, device=self.model.device)) # Low sim for disabled
+                continue
+
+            # Device check for adapter
+            if t_adapter.student_projection.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
+            if t_adapter.student_projection.weight.device != self.model.device: t_adapter.to(self.model.device)
+            
+            # Teacher Forward
+            # Get correct forward function and handle device/dtype
+            _, num_prefix_tokens, forward_fn = self._get_teacher_info(t_model)
+            
+            # Ensure teacher is on correct device/dtype (Global check)
+            # Use a robust check or just force cast if needed. 
+            # Assuming checking one parameter is enough proxy.
+            first_param = next(t_model.parameters(), None)
+            if first_param is not None and (first_param.dtype != self.model.dtype or first_param.device != self.model.device):
+                t_model.to(device=self.model.device, dtype=self.model.dtype)
+
+            t_pixels = t_pixels.to(self.model.device).to(self.model.dtype)
+            
+            with torch.no_grad():
+                t_out = forward_fn(t_pixels) # (B, L_t, D_t)
+            
+            loss_sum_for_teacher = 0.0
+            sim_sum_for_teacher = 0.0
+            valid_sample_count = len(student_features_subset)
+            
+            # Iterate over batch items (aligned with student_features_subset)
+            for k, s_feat in enumerate(student_features_subset):
+                # s_feat: (Student_Tokens, D_s)
+                t_feat = t_out[k] # (Teacher_Tokens, D_t)
+                
+                # --- Compute Similarity for Weighting (Always usage CLS/GAP comparison) ---
+                # Student Mean
+                s_mean = s_feat.mean(dim=0, keepdim=True) # (1, D_s)
+                # Teacher CLS or Global Rep
+                if num_prefix_tokens > 0:
+                    t_cls = t_feat[0].unsqueeze(0).to(self.model.dtype) # (1, D_t)
+                else:
+                    # Fallback to Mean if no CLS
+                    t_cls = t_feat.mean(dim=0, keepdim=True).to(self.model.dtype)
+
+                # Project Student Mean to Teacher Dim for Sim Calc
+                s_mean_proj = t_adapter.student_projection(s_mean)
+                t_cls_proj = t_adapter.teacher_projection(t_cls)
+                
+                # Cosine Sim
+                sim = F.cosine_similarity(s_mean_proj, t_cls_proj, dim=-1) # (1,)
+                sim_sum_for_teacher += sim
+                
+                # --- Strategy Dispatch for LOSS ---
+                if self.kd_token_strategy == "cls_mean":
+                    # Reuse Projected features
+                    s_proj = s_mean_proj
+                    t_proj = t_cls_proj
+                    
+                    # MSE (Normalized)
+                    s_proj = F.normalize(s_proj, p=2, dim=-1)
+                    t_proj = F.normalize(t_proj, p=2, dim=-1)
+                    loss_k = F.mse_loss(s_proj, t_proj)
+                        
+                    loss_sum_for_teacher += loss_k
+                    
+                elif self.kd_token_strategy == "patch_mse":
+                    # Teacher Patch: Interpolate to Student quantity
+                    # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
+                    
+                    t_patches_flat = t_feat[num_prefix_tokens:]
+                    print("t_patches_flat.shape", t_patches_flat.shape) 
+                    num_patches = t_patches_flat.shape[0]
+                    side = int(num_patches**0.5)
+                    assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
+                        
+                    t_patches = t_patches_flat.reshape(side, side, -1).permute(2, 0, 1).unsqueeze(0) # (1, D_t, H, W)
+                    
+                    grid_idx = teacher_indices_tensor[k]
+                    t, h, w = image_grid_thw[grid_idx]
+                    
+                    # Student H, W from grid.
+                    h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
+                    
+                    # Interpolate Teacher to Student Feature Map Size 
+                    t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
+                    t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
+                    print("t_interp.shape", t_interp.shape)
+                    # Verify shape match
+                    assert s_feat.shape[0] == t_interp.shape[0], f"Student {k} patch count ({s_feat.shape[0]}) does not match Teacher {i} patch count ({t_interp.shape[0]}). Skipping."
+                    # Project Student to Teacher Dim 
+                    s_proj = t_adapter.student_projection(s_feat) # (h*w, D_t)
+                    t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
+                    
+                    # Normalized MSE
+                    s_proj = F.normalize(s_proj, p=2, dim=-1)
+                    t_proj = F.normalize(t_proj, p=2, dim=-1)
+
+                    loss_k = F.mse_loss(s_proj, t_proj)
+                    loss_sum_for_teacher += loss_k
+            
+            # Average over batch
+            if valid_sample_count > 0:
+                    loss_sum_for_teacher /= valid_sample_count
+                    sim_sum_for_teacher /= valid_sample_count
+            
+            teacher_raw_losses.append(loss_sum_for_teacher)
+            teacher_sim_scores.append(sim_sum_for_teacher)
+
+        # --- Aggregation ---
+        total_kd_loss = 0.0
+        
+        # User Requirement: 
+        # If cls_mean -> Fixed Weighting
+        # If patch_mse -> Adaptive (Similarity Weighted) Weighting
+        
+        if self.kd_token_strategy == "cls_mean":
+            # For cls_mean, we typically use Fixed Weighting (Simple Average of teachers)
+            # Strategy: Average all teacher losses, then scaling.
+            assert teacher_raw_losses
+            merged_kd_loss = torch.stack(teacher_raw_losses).mean()
+            # Apply Global Scale
+            total_kd_loss = self.kd_loss_weight * merged_kd_loss
+
+        elif self.kd_token_strategy == "patch_mse":
+            # Adaptive / Similarity Weighted
+            # Softmax over similarity scores
+            assert teacher_sim_scores, "No teacher sim scores found"
+            sim_tensor = torch.stack(teacher_sim_scores)
+            assert teacher_raw_losses, "No teacher raw losses found"
+            merged_kd_loss = torch.tensor(0.0, device=self.model.device)
+
+            if sim_tensor.numel() > 0:
+                weights = F.softmax(sim_tensor.flatten(), dim=0) # [Num_Teachers]
+                assert len(weights) == len(teacher_raw_losses), "Mismatch in number of teachers"
+                for i, loss in enumerate(teacher_raw_losses):
+                    merged_kd_loss += weights[i] * loss
+            
+            # Apply Global Scale
+            total_kd_loss = self.kd_loss_weight * merged_kd_loss
+        
+        else:
+            raise ValueError(f"Unknown KD token strategy: {self.kd_token_strategy}")
+
+        kd_loss_weighted = total_kd_loss
+        if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
+            kd_loss_weighted = kd_loss_weighted / self.args.gradient_accumulation_steps
+        
+        total_loss = sft_loss + kd_loss_weighted
+    
         # Log SFT and KD loss
         if self.model.training:
            sft_loss_scalar = sft_loss.item()
-           kd_loss_scalar = total_kd_loss.item() if isinstance(total_kd_loss, torch.Tensor) else total_kd_loss
+           kd_loss_scalar = merged_kd_loss.item() if isinstance(merged_kd_loss, torch.Tensor) else merged_kd_loss
            if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
                 # If these losses were already divided by accumulation steps in compute_loss logic (which they are),
                 # we need to multiply them back if we want "loss per micro-batch" for averaging.
