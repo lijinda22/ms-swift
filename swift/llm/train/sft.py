@@ -77,6 +77,7 @@ class TeacherEncoder:
         assert pil_img, "Failed to convert image to PIL Image"
         # Apply all teacher transforms
         result['teacher_pixel_values'] = []
+        # print("teacher_transforms:", self.teacher_transforms)
         for transform in self.teacher_transforms:
             result['teacher_pixel_values'].append(transform(pil_img))
         result['has_teacher_image'] = True
@@ -344,7 +345,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         logger.info(f"model_parameter_info: {model_parameter_info}")
 
         trainer_cls = TrainerFactory.get_trainer_cls(args)
-        if self.teacher_models is not None:
+        if self.teacher_models is not None and len(self.teacher_models) > 0:
             from swift.trainers.trainers import SftKdTrainer
 
             if trainer_cls is not Seq2SeqTrainer:
@@ -369,7 +370,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
 
     def _get_trainer_kwargs(self):
         kwargs = {}
-        if self.teacher_models is not None:
+        if self.teacher_models is not None and len(self.teacher_models) > 0:
             kwargs["sft_args"] = self.args
             kwargs["teacher_models"] = self.teacher_models
             kwargs["teacher_transforms"] = self.teacher_transforms

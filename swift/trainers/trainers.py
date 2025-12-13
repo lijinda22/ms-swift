@@ -584,15 +584,12 @@ class SftKdTrainer(Seq2SeqTrainer):
         elif teacher_models is not None:
              self.teacher_models = teacher_models
         
-        if not self.teacher_models:
-             pass # Warn or handle? For now, allowing empty for non-KD flows if compatible.
+        assert self.teacher_models, "No teacher models found"
         
         # Parse weights
         self.kd_loss_weight = sft_args.kd_loss_weight
-        
         self.kd_token_strategy = getattr(sft_args, "kd_token_strategy", "patch_mse")
         self.kd_weight_strategy = getattr(sft_args, "kd_weight_strategy", "similarity_weighted") # fixed or similarity_weighted
-
         self.student_cls_token_buffer = None
         self.student_spatial_merge_size = 2  # Default for Qwen2-VL/3-VL 
         self.kd_modules: Optional[nn.ModuleList] = None
@@ -661,7 +658,7 @@ class SftKdTrainer(Seq2SeqTrainer):
             flat_batch = batch
 
         teacher_input_lists = [[] for _ in range(len(self.teacher_models))]
-        teacher_indices = []
+        teacher_indices_lists = [[] for _ in range(len(self.teacher_models))]
         
         # Track student image index (dense) to align with student_cls_token_buffer
         student_img_idx = 0
@@ -687,19 +684,14 @@ class SftKdTrainer(Seq2SeqTrainer):
                     num_images_in_sample = 1
 
             if has_student_image:
-                if 'teacher_pixel_values' in item:
-                    # item['teacher_pixel_values'] is List[Tensor], one per teacher
-                    t_vals = item['teacher_pixel_values']
-                    if len(t_vals) == len(self.teacher_models):
-                        for t_idx, val in enumerate(t_vals):
-                            teacher_input_lists[t_idx].append(val)
-                        # Map to the FIRST image of this sample in the student buffer
-                        teacher_indices.append(student_img_idx)
-                    else:
-                        logger.warning_once(f"Teacher value count mismatch. Expected {len(self.teacher_models)}, got {len(t_vals)}")
-                else:
-                     # Student has image but Teacher failed/missing.
-                     pass
+                assert 'teacher_pixel_values' in item, f"No teacher pixel values found, item.keys: {item.keys()}"
+                # item['teacher_pixel_values'] is List[Tensor], one per teacher
+                t_vals = item['teacher_pixel_values']
+                assert len(t_vals) == len(self.teacher_models), "Teacher value count mismatch"
+                for t_idx, val in enumerate(t_vals):
+                    teacher_input_lists[t_idx].append(val)
+                    # Map to the FIRST image of this sample in the student buffer
+                    teacher_indices_lists[t_idx].append(student_img_idx)
 
                 # Check for multi-image alignment risk
                 if num_images_in_sample > 1:
@@ -713,11 +705,12 @@ class SftKdTrainer(Seq2SeqTrainer):
             elif "teacher_pixel_values" in item:
                 logger.warning_once(f"Sample {i} has teacher_pixel_values but no pixel_values. Ignoring teacher image.")
 
-        if teacher_indices:
+        if any(teacher_indices_lists):
             # Stack per teacher
             student_inputs["teacher_pixel_values"] = [torch.stack(l) for l in teacher_input_lists]
             # 记录哪些样本有 Teacher 图片 (Indices into the dense student buffer)
-            student_inputs["teacher_image_indices"] = torch.tensor(teacher_indices, dtype=torch.long)
+            # CHANGE: Now a list of tensors, one per teacher
+            student_inputs["teacher_image_indices"] = [torch.tensor(l, dtype=torch.long) for l in teacher_indices_lists]
         
         return student_inputs
 
@@ -785,47 +778,52 @@ class SftKdTrainer(Seq2SeqTrainer):
         )
         sft_loss = sft_loss_outputs[0]
         
-        if not self.teacher_models:
-             # Just skip without warning if no teachers (standard SFT)
-             return sft_loss_outputs if return_outputs else sft_loss
+        assert self.teacher_models, "No teacher models found"
+        # if not self.teacher_models:
+        #      # Just skip without warning if no teachers (standard SFT)
+        #      return sft_loss_outputs if return_outputs else sft_loss
         
-        if self.kd_modules is None:
-             logger.warning_once("KD Error: kd_modules is None. Initialization failed?")
-             return sft_loss_outputs if return_outputs else sft_loss
+        assert self.kd_modules is not None, "No KD modules found"
+        # if self.kd_modules is None:
+        #      logger.warning_once("KD Error: kd_modules is None. Initialization failed?")
+        #      return sft_loss_outputs if return_outputs else sft_loss
 
-        if teacher_pixel_values is None:
-             # Possible if batch has no images or collation failed
-             # Check if we expected images
-             if "pixel_values" in inputs:
-                  logger.warning_once("KD Error: batch has pixel_values but no teacher_pixel_values.")
-             return sft_loss_outputs if return_outputs else sft_loss
+        assert teacher_pixel_values is not None, "No teacher pixel values found"
+        # if teacher_pixel_values is None:
+        #      # Possible if batch has no images or collation failed
+        #      # Check if we expected images
+        #      if "pixel_values" in inputs:
+        #           logger.warning_once("KD Error: batch has pixel_values but no teacher_pixel_values.")
+        #      return sft_loss_outputs if return_outputs else sft_loss
 
-        if self.student_cls_token_buffer is None:
-             # Hook didn't fire
-             has_pixels = "pixel_values" in inputs
-             logger.warning_once(f"KD Error: student_cls_token_buffer is None. Hook didn't fire? Has pixels: {has_pixels}")
-             return sft_loss_outputs if return_outputs else sft_loss
+        assert self.student_cls_token_buffer is not None, "No student cls token buffer found"
+        # if self.student_cls_token_buffer is None:
+        #      # Hook didn't fire
+        #      has_pixels = "pixel_values" in inputs
+        #      logger.warning_once(f"KD Error: student_cls_token_buffer is None. Hook didn't fire? Has pixels: {has_pixels}")
+        #      return sft_loss_outputs if return_outputs else sft_loss
         
         # --- Student Feature Processing (Split) ---
         # Qwen3-VL/Qwen2.5-VL output is flattened. We need grid_thw to split.
-        if image_grid_thw is None:
-             logger.warning_once("KD Error: image_grid_thw missing in inputs. Cannot split flattened student features. Skipping KD.")
-             return sft_loss_outputs if return_outputs else sft_loss
+        assert image_grid_thw is not None, "No image_grid_thw found"
+        # if image_grid_thw is None:
+        #      logger.warning_once("KD Error: image_grid_thw missing in inputs. Cannot split flattened student features. Skipping KD.")
+        #      return sft_loss_outputs if return_outputs else sft_loss
 
         hidden_states = self.student_cls_token_buffer
         
         split_sizes = (image_grid_thw.to(hidden_states.device).prod(dim=-1) // (self.student_spatial_merge_size ** 2)).tolist()
         
-        if hidden_states.shape[0] != sum(split_sizes):
-            logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
-            return sft_loss_outputs if return_outputs else sft_loss
+        assert hidden_states.shape[0] == sum(split_sizes), "Hidden states shape mismatch"
+        # if hidden_states.shape[0] != sum(split_sizes):
+        #     logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
+        #     return sft_loss_outputs if return_outputs else sft_loss
 
         per_image_features = torch.split(hidden_states, split_sizes, dim=0)
         
         # Sub-Select student features that correspond to teacher images
-        teacher_indices_tensor = teacher_image_indices.to(hidden_states.device)
-        # list of Tensors
-        student_features_subset = [per_image_features[idx] for idx in teacher_indices_tensor]
+        # OLD: teacher_indices_tensor = teacher_image_indices.to(hidden_states.device)
+        # OLD: student_features_subset = [per_image_features[idx] for idx in teacher_indices_tensor]
         
         # --- Loop over teachers ---
         teacher_raw_losses = []
@@ -834,14 +832,16 @@ class SftKdTrainer(Seq2SeqTrainer):
         for i, (t_model, t_pixels, t_adapter) in enumerate(zip(self.teacher_models, teacher_pixel_values, self.kd_modules)):
             
             # Skip invalid/disabled teachers
-            if t_adapter is None:
-                teacher_raw_losses.append(torch.tensor(0.0, device=self.model.device))
-                teacher_sim_scores.append(torch.tensor(-100.0, device=self.model.device)) # Low sim for disabled
-                continue
+            assert t_adapter is not None, "No KD adapter found for teacher"
 
             # Device check for adapter
             if t_adapter.student_projection.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
             if t_adapter.student_projection.weight.device != self.model.device: t_adapter.to(self.model.device)
+
+            # --- PREPARE STUDENT SUBSET FOR THIS TEACHER ---
+            # teacher_image_indices is now a list of tensors (one per teacher)
+            current_teacher_indices = teacher_image_indices[i].to(hidden_states.device)
+            student_features_subset = [per_image_features[idx] for idx in current_teacher_indices]
             
             # Teacher Forward
             # Get correct forward function and handle device/dtype
@@ -862,7 +862,7 @@ class SftKdTrainer(Seq2SeqTrainer):
             loss_sum_for_teacher = 0.0
             sim_sum_for_teacher = 0.0
             valid_sample_count = len(student_features_subset)
-            
+            # print("t_out.shape: ", t_out.shape, " valid_sample_count: ", valid_sample_count)
             # Iterate over batch items (aligned with student_features_subset)
             for k, s_feat in enumerate(student_features_subset):
                 # s_feat: (Student_Tokens, D_s)
@@ -893,8 +893,8 @@ class SftKdTrainer(Seq2SeqTrainer):
                     t_proj = t_cls_proj
                     
                     # MSE (Normalized)
-                    s_proj = F.normalize(s_proj, p=2, dim=-1)
-                    t_proj = F.normalize(t_proj, p=2, dim=-1)
+                    # s_proj = F.normalize(s_proj, p=2, dim=-1)
+                    # t_proj = F.normalize(t_proj, p=2, dim=-1)
                     loss_k = F.mse_loss(s_proj, t_proj)
                         
                     loss_sum_for_teacher += loss_k
@@ -904,14 +904,14 @@ class SftKdTrainer(Seq2SeqTrainer):
                     # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
                     
                     t_patches_flat = t_feat[num_prefix_tokens:]
-                    print("t_patches_flat.shape", t_patches_flat.shape) 
+                    # print("t_patches_flat.shape", t_patches_flat.shape) 
                     num_patches = t_patches_flat.shape[0]
                     side = int(num_patches**0.5)
                     assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
                         
                     t_patches = t_patches_flat.reshape(side, side, -1).permute(2, 0, 1).unsqueeze(0) # (1, D_t, H, W)
                     
-                    grid_idx = teacher_indices_tensor[k]
+                    grid_idx = current_teacher_indices[k]
                     t, h, w = image_grid_thw[grid_idx]
                     
                     # Student H, W from grid.
@@ -920,7 +920,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                     # Interpolate Teacher to Student Feature Map Size 
                     t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
                     t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
-                    print("t_interp.shape", t_interp.shape)
+                    # print("t_interp.shape", t_interp.shape)
                     # Verify shape match
                     assert s_feat.shape[0] == t_interp.shape[0], f"Student {k} patch count ({s_feat.shape[0]}) does not match Teacher {i} patch count ({t_interp.shape[0]}). Skipping."
                     # Project Student to Teacher Dim 
@@ -928,16 +928,16 @@ class SftKdTrainer(Seq2SeqTrainer):
                     t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
                     
                     # Normalized MSE
-                    s_proj = F.normalize(s_proj, p=2, dim=-1)
-                    t_proj = F.normalize(t_proj, p=2, dim=-1)
+                    # s_proj = F.normalize(s_proj, p=2, dim=-1)
+                    # t_proj = F.normalize(t_proj, p=2, dim=-1)
 
                     loss_k = F.mse_loss(s_proj, t_proj)
                     loss_sum_for_teacher += loss_k
             
             # Average over batch
             if valid_sample_count > 0:
-                    loss_sum_for_teacher /= valid_sample_count
-                    sim_sum_for_teacher /= valid_sample_count
+                loss_sum_for_teacher /= valid_sample_count
+                sim_sum_for_teacher /= valid_sample_count
             
             teacher_raw_losses.append(loss_sum_for_teacher)
             teacher_sim_scores.append(sim_sum_for_teacher)

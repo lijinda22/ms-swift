@@ -66,6 +66,7 @@ swift rlhf \
     --num_iterations 1 \
     --async_generate false \
     --beta 0.001 \
+    --epsilon 0.2 \
     --max_grad_norm 1.0 \
     --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_grpo_vqa/v1-20251209-210003/checkpoint-1000/ 
 

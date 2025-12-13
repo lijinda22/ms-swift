@@ -7,6 +7,12 @@ swift export \
     --to_cached_dataset true \
     --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset
 
+# 视觉蒸馏包括以下对比实验
+# 0. 原始VLM模型
+# 1. 无kd, sft, cpt+sft
+# 2. 有kd, sft_kd, cpt_kd+sft_kd
+# 对比实验: 1个教师 / 多个教师
+# 消融实验: 教师相似性权重/均值分配
 
 # 4 * 44GiB; 15.5s/it
 # 直接sft
@@ -24,19 +30,19 @@ swift sft \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --learning_rate 2e-5 \
+    --per_device_train_batch_size 8 \
+    --per_device_eval_batch_size 8 \
+    --learning_rate 5e-5 \
     --gradient_accumulation_steps 16 \
-    --eval_steps 200 \
-    --save_steps 200 \
+    --eval_steps 100 \
+    --save_steps 100 \
     --logging_steps 5 \
-    --max_length 4096 \
+    --max_length 3072 \
     --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 6 \
     --dataset_num_proc 2 \
-    --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft \
+    --save_total_limit 5 \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -44,22 +50,24 @@ swift sft \
     --freeze_vit False \
     --freeze_aligner False \
     --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
+    --vit_gradient_checkpointing true \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/logs \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --target_modules all-linear
+    --target_modules all-linear \
+    --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/v0-20251212-222150/checkpoint-600/
 
 
 # 直接sft with kd
+export KD_LOSS_WEIGHT=0.5
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
-MASTER_PORT=29502 \
-CUDA_VISIBLE_DEVICES=2,3 \
+MASTER_PORT=29509 \
+CUDA_VISIBLE_DEVICES=4,5 \
 swift sft \
     --model /data/ckpt/Qwen3-VL-2B-Instruct \
     --train_type lora \
@@ -68,18 +76,18 @@ swift sft \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --learning_rate 2e-5 \
-    --gradient_accumulation_steps 16 \
+    --per_device_eval_batch_size 8 \
+    --learning_rate 5e-5 \
+    --gradient_accumulation_steps 32 \
     --eval_steps 200 \
     --save_steps 200 \
     --logging_steps 5 \
     --max_length 4096 \
     --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 6 \
     --dataset_num_proc 2 \
-    --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft \
+    --save_total_limit 5 \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_${KD_LOSS_WEIGHT} \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -89,57 +97,13 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_sft/logs \
-    --lora_rank 8 \
-    --lora_alpha 16 \
-    --target_modules all-linear
-
-# 直接sft with kd test
-PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=2 \
-IMAGE_MAX_TOKEN_NUM=1024 \
-VIDEO_MAX_TOKEN_NUM=128 \
-FPS_MAX_FRAMES=16 \
-MASTER_PORT=29502 \
-CUDA_VISIBLE_DEVICES=2,3 \
-swift sft \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
-    --max_steps 2 \
-    --split_dataset_ratio 0.05 \
-    --torch_dtype bfloat16 \
-    --per_device_train_batch_size 2 \
-    --per_device_eval_batch_size 2 \
-    --learning_rate 2e-5 \
-    --gradient_accumulation_steps 1 \
-    --eval_steps 2 \
-    --save_steps 2 \
-    --logging_steps 1 \
-    --max_length 4096 \
-    --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
-    --dataset_num_proc 2 \
-    --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/test/qwen3_vl_2b_sft_kd \
-    --deepspeed zero3 \
-    --use_liger_kernel true \
-    --attn_impl flash_attention_2 \
-    --check_model false \
-    --freeze_vit False \
-    --freeze_aligner False \
-    --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
-    --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/test/qwen3_vl_2b_sft_kd/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_${KD_LOSS_WEIGHT}/logs \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear \
     --kd_teacher_model_type conchv1_5 conch uni uni2 \
     --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
-    --kd_loss_weight 0.2 \
-    --kd_token_strategy patch_mse \
-    --kd_weight_strategy similarity_weighted
+    --kd_loss_weight ${KD_LOSS_WEIGHT} 
 
     
 # cpt+sft
@@ -183,6 +147,8 @@ swift sft \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear
+
+
 
 
 # cpt+sft, distillation
