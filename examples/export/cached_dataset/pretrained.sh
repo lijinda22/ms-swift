@@ -110,7 +110,7 @@ swift sft \
     --freeze_vit False \
     --freeze_aligner False \
     --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
+    --vit_gradient_checkpointing true \
     --report_to tensorboard \
     --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k_kd_w${KD_LOSS_WEIGHT}/logs \
     --train_type lora \
@@ -119,4 +119,5 @@ swift sft \
     --target_modules all-linear \
     --kd_teacher_model_type conchv1_5 conch uni uni2 \
     --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
-    --kd_loss_weight ${KD_LOSS_WEIGHT} 
+    --kd_loss_weight ${KD_LOSS_WEIGHT} \
+    --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k_kd_w0.5/v0-20251213-214440/checkpoint-100/ 

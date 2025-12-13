@@ -633,12 +633,26 @@ class SftKdTrainer(Seq2SeqTrainer):
         super().save_model(output_dir, _internal_call)
         # Only save on the main process to avoid race conditions and errors on other ranks
         # Only save on the main process to avoid race conditions and errors on other ranks
-        if self.is_world_process_zero() and output_dir and self.kd_modules:
+        if output_dir and self.kd_modules:
             # Ensure the directory exists before saving
-            os.makedirs(output_dir, exist_ok=True) # Ensure dir exists
+            if self.is_world_process_zero():
+                os.makedirs(output_dir, exist_ok=True) # Ensure dir exists
+
             kd_path = os.path.join(output_dir, "kd_module.pt")
-            torch.save(self.kd_modules.state_dict(), kd_path)
-            logger.info(f"Saved KD modules to {kd_path}")
+            
+            # Context manager for DeepSpeed Zero3 gathering
+            ctx = nullcontext()
+            try:
+                import deepspeed
+                # Gather all parameters of kd_modules on rank 0
+                ctx = deepspeed.zero.GatheredParameters(list(self.kd_modules.parameters()), modifier_rank=0)
+            except ImportError:
+                pass
+            
+            with ctx:
+                if self.is_world_process_zero():
+                    torch.save(self.kd_modules.state_dict(), kd_path)
+                    logger.info(f"Saved KD modules to {kd_path}")
 
 
     def _kd_data_collator(self, batch: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
@@ -760,6 +774,28 @@ class SftKdTrainer(Seq2SeqTrainer):
         else:
             logger.warning("Model already has 'kd_adapters'. Using existing one (resume?).")
             self.kd_modules = self.model.kd_adapters
+
+        # Attempt to load KD weights if resuming
+        if self.args.resume_from_checkpoint:
+            ckpt_path = self.args.resume_from_checkpoint
+            # If it's a valid directory path
+            if isinstance(ckpt_path, str) and os.path.isdir(ckpt_path):
+                kd_file = os.path.join(ckpt_path, "kd_module.pt")
+                if os.path.exists(kd_file):
+                    logger.info(f"Loading KD adapter weights from {kd_file}...")
+                    # Map location to device/cpu
+                    try:
+                        state_dict = torch.load(kd_file, map_location=self.model.device)
+                        self.kd_modules.load_state_dict(state_dict)
+                        logger.info("Successfully loaded KD adapter weights.")
+                    except RuntimeError as e:
+                        # Handle corrupted checkpoints (e.g. from previous Zero3 save failure)
+                        logger.warning(f"Failed to load KD weights from {kd_file}: {e}")
+                        logger.warning("This might be due to a previous checkpoint saved without gathering parameters (Zero3). Proceeding with RANDOM INITIALIZATION for KD adapters.")
+                    except Exception as e:
+                        logger.warning(f"Unexpected error loading KD weights: {e}. Proceeding with RANDOM INITIALIZATION.")
+                else:
+                    logger.warning(f"Resume requested ({ckpt_path}) but 'kd_module.pt' not found. parameters will be random.")
 
 
     def compute_loss(
