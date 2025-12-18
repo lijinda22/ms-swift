@@ -552,11 +552,23 @@ class KnowledgeDistillationModule(nn.Module):
         # Student: Learn to map to Teacher's space
         self.student_projection = nn.Linear(student_hidden_size, teacher_hidden_size)
         self.teacher_projection = nn.Identity()
+        
+        # New: Teacher internal attention projections for W_idx calculation (Eq 3)
+        self.teacher_query_proj = nn.Linear(teacher_hidden_size, teacher_hidden_size)
+        self.teacher_key_proj = nn.Linear(teacher_hidden_size, teacher_hidden_size)
 
         # Explicitly initialize student projection
         torch.nn.init.orthogonal_(self.student_projection.weight)
         if self.student_projection.bias is not None:
             torch.nn.init.zeros_(self.student_projection.bias)
+        
+        # Initialize new projections
+        torch.nn.init.xavier_uniform_(self.teacher_query_proj.weight)
+        if self.teacher_query_proj.bias is not None:
+             torch.nn.init.zeros_(self.teacher_query_proj.bias)
+        torch.nn.init.xavier_uniform_(self.teacher_key_proj.weight)
+        if self.teacher_key_proj.bias is not None:
+             torch.nn.init.zeros_(self.teacher_key_proj.bias)
 
 
 class SftKdTrainer(Seq2SeqTrainer):
@@ -722,8 +734,12 @@ class SftKdTrainer(Seq2SeqTrainer):
                 raise ValueError(f"Sample {i} has no pixel_values or teacher_pixel_values.")
 
         if any(teacher_indices_lists):
-            # Stack per teacher
-            student_inputs["teacher_pixel_values"] = [torch.stack(l) for l in teacher_input_lists]
+            # Stack per teacher? NO. 
+            # Images might be variable size (different aspect ratios/resolutions after transform).
+            # torch.stack will fail if shapes differ.
+            # We keep them as List[List[Tensor]] (Outer: Teacher, Inner: Batch).
+            # compute_loss will handle the list.
+            student_inputs["teacher_pixel_values"] = teacher_input_lists
             # 记录哪些样本有 Teacher 图片 (Indices into the dense student buffer)
             # CHANGE: Now a list of tensors, one per teacher
             student_inputs["teacher_image_indices"] = [torch.tensor(l, dtype=torch.long) for l in teacher_indices_lists]
@@ -813,138 +829,198 @@ class SftKdTrainer(Seq2SeqTrainer):
         assert hidden_states.shape[0] == sum(split_sizes), "Hidden states shape mismatch"
         per_image_features = torch.split(hidden_states, split_sizes, dim=0)
         # --- Loop over teachers ---
-        # Todo: 修改蒸馏计算逻辑
-        teacher_raw_losses = []
-        teacher_sim_scores = []
+        
+        valid_sample_count = 0 
+        # Check first teacher indices to determine batch size in effect
+        if len(teacher_image_indices) > 0:
+             valid_sample_count = len(teacher_image_indices[0])
+
+        # Storage for computations per teacher to allow global Softmax later
+        # Structure: list of (teacher_loss_per_sample, teacher_score_per_sample)
+        # But we need to aggregate differently: 
+        # Loss_total = Sum_i (W_tea_i * Loss_i)
+        # where Loss_i is averaged over batch? Or per sample?
+        # Usually KD is per sample. Let's compute per sample and then average.
+        
+        # Pre-allocate lists for per-sample values per teacher
+        # teacher_samples_loss[i] -> Tensor(B, )
+        # teacher_samples_score[i] -> Tensor(B, )
+        teacher_samples_loss = []
+        teacher_samples_score = []
+
         for i, (t_model, t_pixels, t_adapter) in enumerate(zip(self.teacher_models, teacher_pixel_values, self.kd_modules)):
             assert t_adapter is not None, "No KD adapter found for teacher"
             if t_adapter.student_projection.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
             if t_adapter.student_projection.weight.device != self.model.device: t_adapter.to(self.model.device)
+            if t_adapter.teacher_query_proj.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
+            if t_adapter.teacher_query_proj.weight.device != self.model.device: t_adapter.to(self.model.device)
+            if t_adapter.teacher_key_proj.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
+            if t_adapter.teacher_key_proj.weight.device != self.model.device: t_adapter.to(self.model.device)
 
             # --- PREPARE STUDENT SUBSET FOR THIS TEACHER ---
             # teacher_image_indices is now a list of tensors (one per teacher)
             current_teacher_indices = teacher_image_indices[i].to(hidden_states.device)
+            # List of tensors of shape (N_s, D_s)
             student_features_subset = [per_image_features[idx] for idx in current_teacher_indices]
             
-            # Teacher Forward
-            # Get correct forward function and handle device/dtype
+            # --- TEACHER FORWARD ---
             _, num_prefix_tokens, forward_fn, patch_size = self._get_teacher_info(t_model)
             
-            # Ensure teacher is on correct device/dtype (Global check)
-            # Use a robust check or just force cast if needed. 
-            # Assuming checking one parameter is enough proxy.
+            # Ensure teacher is on correct device/dtype
             first_param = next(t_model.parameters(), None)
             if first_param is not None and (first_param.dtype != self.model.dtype or first_param.device != self.model.device):
                 t_model.to(device=self.model.device, dtype=self.model.dtype)
-            t_pixels = t_pixels.to(self.model.device).to(self.model.dtype)
+            # --- OPTIMIZED BATCH FORWARD ---
+            # 1. Determine Max Padded Size (multiple of patch_size)
+            max_h, max_w = 0, 0
+            for tp in t_pixels:
+                _, h, w = tp.shape
+                max_h = max(max_h, h)
+                max_w = max(max_w, w)
+            
+            # Ensure divisible by patch_size for ViT
+            pad_h = ((max_h + patch_size - 1) // patch_size) * patch_size
+            pad_w = ((max_w + patch_size - 1) // patch_size) * patch_size
+            
+            # 2. Batching with Padding
+            batch_size_t = len(t_pixels)
+            # Use first pixel to get channels. dtype/device will be enforced.
+            c_dim = t_pixels[0].shape[0] if len(t_pixels) > 0 else 3
+            device = self.model.device
+            dtype = self.model.dtype
+            
+            padded_batch = torch.zeros((batch_size_t, c_dim, pad_h, pad_w), dtype=dtype, device=device)
+            valid_hw = [] # Store (valid_h, valid_w) for cropping later
+            
+            for idx, tp in enumerate(t_pixels):
+                tp = tp.to(device=device, dtype=dtype)
+                _, h, w = tp.shape
+                padded_batch[idx, :, :h, :w] = tp
+                valid_hw.append((h, w))
+            
+            # 3. Forward Batch
             with torch.no_grad():
-                t_out = forward_fn(t_pixels) # (B, L_t, D_t)
-            loss_sum_for_teacher = 0.0
-            sim_sum_for_teacher = 0.0
-            valid_sample_count = len(student_features_subset)
-            # print("t_out.shape: ", t_out.shape, " valid_sample_count: ", valid_sample_count) 
-            # Todo: 修改 计算相似性和mse loss的逻辑
-            # Iterate over batch items (aligned with student_features_subset)
+                t_out_batch = forward_fn(padded_batch) # (B, L_total, D)
+            
+            # --- PER SAMPLE COMPUTATION ---
+            batch_losses = []
+            batch_scores = []
+            
             for k, s_feat in enumerate(student_features_subset):
-                # s_feat: (Student_Tokens, D_s)
-                t_feat = t_out[k] # (Teacher_Tokens, D_t)
+                # s_feat: (N_s, D_s) - Student Patches
                 
-                # --- Compute Similarity for Weighting (Always usage CLS/GAP comparison) ---
-                # Student Mean
-                s_mean = s_feat.mean(dim=0, keepdim=True) # (1, D_s)
-                # Teacher CLS or Global Rep
+                t_feat_all = t_out_batch[k] # (L_total, D_t)
+                
+                # Recover Grid Info
+                grid_pad_h = pad_h // patch_size
+                grid_pad_w = pad_w // patch_size
+                
+                # Extract Valid Features (Crop Padding)
                 if num_prefix_tokens > 0:
-                    t_cls = t_feat[0].unsqueeze(0).to(self.model.dtype) # (1, D_t)
+                    t_cls = t_feat_all[0].unsqueeze(0) # (1, D_t)
+                    # Patches: skip prefix
+                    t_patches_flat_padded = t_feat_all[num_prefix_tokens:]
                 else:
-                    # Fallback to Mean if no CLS
-                    t_cls = t_feat.mean(dim=0, keepdim=True).to(self.model.dtype)
+                    # Will calculate t_cls from valid patches later
+                    t_patches_flat_padded = t_feat_all
 
-                # Project Student Mean to Teacher Dim for Sim Calc
-                s_mean_proj = t_adapter.student_projection(s_mean)
-                t_cls_proj = t_adapter.teacher_projection(t_cls)
+                # Reshape to 2D Grid (Padded)
+                # Note: teacher output L_total = prefix + grid_pad_h * grid_pad_w
+                # We assume standard ViT output structure here.
+                t_patches_grid = t_patches_flat_padded.reshape(grid_pad_h, grid_pad_w, -1) # (Gh, Gw, D)
                 
-                # Cosine Sim
-                sim = F.cosine_similarity(s_mean_proj, t_cls_proj, dim=-1) # (1,)
-                sim_sum_for_teacher += sim
+                # Crop to Valid Region
+                vh, vw = valid_hw[k]
+                vgh = vh // patch_size
+                vgw = vw // patch_size
                 
-                # --- Strategy Dispatch for LOSS ---
-                if self.kd_token_strategy == "cls_mean":
-                    # Reuse Projected features
-                    s_proj = s_mean_proj
-                    t_proj = t_cls_proj
-                    loss_k = F.mse_loss(s_proj, t_proj)
-                    loss_sum_for_teacher += loss_k
-                    
-                elif self.kd_token_strategy == "patch_mse":
-                    # Teacher Patch: Interpolate to Student quantity
-                    # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
-                    
-                    t_patches_flat = t_feat[num_prefix_tokens:]
-                    # Todo: 根据 t_pixels 计算数量, 和patch_size的倍数 相关
-                    # side_h, side_w = t_pixels.shape -2, -1 / patch_size
-                    # num_patches = side_h * side_w
-                    # 然后reshape 到二维
-                    num_patches = t_patches_flat.shape[0]
-                    side = int(num_patches**0.5)
-                    assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
-                        
-                    t_patches = t_patches_flat.reshape(side, side, -1).permute(2, 0, 1).unsqueeze(0) # (1, D_t, H, W)
-                    
-                    grid_idx = current_teacher_indices[k]
-                    t, h, w = image_grid_thw[grid_idx]
-                    
-                    # Student H, W from grid.
-                    h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
-                    # Todo: print h_map, w_map, side_h, side_w, 我需要看比例是否大致正确
-                    # Interpolate Teacher to Student Feature Map Size 
-                    t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
-                    t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
-                    # print("t_interp.shape", t_interp.shape)
-                    # Verify shape match
-                    assert s_feat.shape[0] == t_interp.shape[0], f"Student {k} patch count ({s_feat.shape[0]}) does not match Teacher {i} patch count ({t_interp.shape[0]}). Skipping."
-                    # Project Student to Teacher Dim 
-                    s_proj = t_adapter.student_projection(s_feat) # (h*w, D_t)
-                    t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
-                    # Todo: 修改 mse loss 计算
-                    loss_k = F.mse_loss(s_proj, t_proj)
-                    loss_sum_for_teacher += loss_k
+                # Crucial: Crop top-left valid region
+                t_patches_grid_valid = t_patches_grid[:vgh, :vgw, :] # (vgh, vgw, D)
+                
+                # Handle "No CLS" Fallback
+                if num_prefix_tokens == 0:
+                    # Global Mean Pooling over VALID patches only
+                    # Reshape valid to (N_valid, D)
+                    t_valid_flat = t_patches_grid_valid.reshape(-1, t_patches_grid_valid.shape[-1])
+                    t_cls = t_valid_flat.mean(dim=0, keepdim=True)
+                
+                # Prepare t_patches for Interpolation (1, D, H, W)
+                t_patches = t_patches_grid_valid.permute(2, 0, 1).unsqueeze(0) 
+                
+                # 2. Project Student to Teacher dim -> S'
+                s_proj = t_adapter.student_projection(s_feat) # (N_s, D_s) -> (N_s, D_t)
+                
+                # 3. Interpolate Teacher Patches to Student Size
+                grid_idx = current_teacher_indices[k]
+                _, h, w = image_grid_thw[grid_idx] # Student Grid Size (Raw)
+                h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
+                print("h_map, w_map: ", h_map, w_map, "valid h, w: ", vh, vw)
+                # Interpolate T_patches to (h_map, w_map)
+                # Note: teacher patches are used for both W_k calculation and MSE target
+                t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
+                t_interp = t_interp.to(t_patches.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_patches.shape[1]) # (N_s, D_t)
+                
+                assert s_proj.shape[0] == t_interp.shape[0], "Shape mismatch after interpolation"
+                N_s = s_proj.shape[0]
+                
+                # --- A. W_tok (Intra-Teacher Attention) ---
+                # Q = T_cls * W_q
+                # K = T_interp * W_k
+                Q = t_adapter.teacher_query_proj(t_cls) # (1, D_t)
+                K = t_adapter.teacher_key_proj(t_interp) # (N_s, D_t)
+                
+                attn_logits = torch.matmul(Q, K.transpose(0, 1)) / (Q.shape[-1] ** 0.5) # (1, N_s)
+                w_tok = F.softmax(attn_logits, dim=-1) # (1, N_s) weights for each patch
+                
+                # --- B. Teacher Score (Student - Teacher Alignment) ---
+                # Score = Mean( T_cls * s_proj^T ) / sqrt(d)
+                # Note: s_proj is already in teacher space.
+                # No extra learnable W here as per instruction.
+                # t_cls: (1, D_t), s_proj: (N_s, D_t)
+                alignment_scores = torch.matmul(t_cls, s_proj.transpose(0, 1)) / (t_cls.shape[-1] ** 0.5) # (1, N_s)
+                teacher_score = alignment_scores.mean() # Scalar score for this teacher on this image
+                
+                # --- C. Weighted MSE Loss ---
+                # Loss = Sum_j ( (w_tok_j + 1/N) * MSE(t_interp_j, s_proj_j) )
+                # MSE per token: (t - s)^2
+                # F.mse_loss with reduction='none' -> (N, D). mean(-1) -> (N,)
+                # calculate mean over feature dim (D) to get scalar MSE per token
+                token_mse = F.mse_loss(s_proj, t_interp, reduction='none').mean(dim=-1) # (N_s, )
+                
+                # Weighting
+                # w_tok is (1, N_s), token_mse is (N_s, )
+                # Element-wise multiplication followed by sum (Weighted Sum)
+                weighted_mse = (w_tok.squeeze(0) + (1.0 / N_s)) * token_mse
+                
+                sample_loss = weighted_mse.sum()
+                
+                batch_losses.append(sample_loss)
+                batch_scores.append(teacher_score)
             
-            # Average over batch
-            if valid_sample_count > 0:
-                loss_sum_for_teacher /= valid_sample_count
-                sim_sum_for_teacher /= valid_sample_count
-            
-            teacher_raw_losses.append(loss_sum_for_teacher)
-            teacher_sim_scores.append(sim_sum_for_teacher)
+            teacher_samples_loss.append(torch.stack(batch_losses)) # (B, )
+            teacher_samples_score.append(torch.stack(batch_scores)) # (B, )
 
-        # --- Aggregation ---
-        total_kd_loss = 0.0
-        if self.kd_token_strategy == "cls_mean":
-            # For cls_mean, we typically use Fixed Weighting (Simple Average of teachers)
-            # Strategy: Average all teacher losses, then scaling.
-            assert teacher_raw_losses
-            merged_kd_loss = torch.stack(teacher_raw_losses).mean()
-            # Apply Global Scale
-            total_kd_loss = self.kd_loss_weight * merged_kd_loss
-
-        elif self.kd_token_strategy == "patch_mse":
-            # Adaptive / Similarity Weighted
-            # Softmax over similarity scores
-            assert teacher_sim_scores, "No teacher sim scores found"
-            sim_tensor = torch.stack(teacher_sim_scores)
-            assert teacher_raw_losses, "No teacher raw losses found"
-            merged_kd_loss = torch.tensor(0.0, device=self.model.device)
-
-            if sim_tensor.numel() > 0:
-                weights = F.softmax(sim_tensor.flatten(), dim=0) # [Num_Teachers]
-                assert len(weights) == len(teacher_raw_losses), "Mismatch in number of teachers"
-                for i, loss in enumerate(teacher_raw_losses):
-                    merged_kd_loss += weights[i] * loss
-            
-            # Apply Global Scale
-            total_kd_loss = self.kd_loss_weight * merged_kd_loss
-        else:
-            raise ValueError(f"Unknown KD token strategy: {self.kd_token_strategy}")
+        # --- Aggregation per Sample then Mean ---
+        # teacher_samples_loss: List[Tensor(B)] of len M
+        # teacher_samples_score: List[Tensor(B)] of len M
+        
+        # Stack teachers -> (M, B)
+        all_teachers_losses = torch.stack(teacher_samples_loss) # (M, B)
+        all_teachers_scores = torch.stack(teacher_samples_score) # (M, B)
+        
+        # Softmax over teachers for each sample (dim=0)
+        # W_tea = Softmax(Scores)
+        all_teacher_weights = F.softmax(all_teachers_scores, dim=0) # (M, B)
+        
+        # Weighted Combination
+        # Loss = Sum_i (W_tea_i * Loss_i)
+        final_kd_losses_per_sample = (all_teacher_weights * all_teachers_losses).sum(dim=0) # (B, )
+        
+        # Mean over batch
+        merged_kd_loss = final_kd_losses_per_sample.mean()
+        
+        # Apply Global Scale
+        total_kd_loss = self.kd_loss_weight * merged_kd_loss
 
         kd_loss_weighted = total_kd_loss
         if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
@@ -957,25 +1033,8 @@ class SftKdTrainer(Seq2SeqTrainer):
            sft_loss_scalar = sft_loss.item()
            kd_loss_scalar = merged_kd_loss.item() if isinstance(merged_kd_loss, torch.Tensor) else merged_kd_loss
            if num_items_in_batch is not None and self.model_accepts_loss_kwargs:
-                # If these losses were already divided by accumulation steps in compute_loss logic (which they are),
-                # we need to multiply them back if we want "loss per micro-batch" for averaging.
-                # However, MeanMetric averages whatever we feed it. 
-                # Standard 'loss' is averaged over steps.
-                # If we want to align with standard loss logging, we should feed the "scaled" loss * accumulation_steps?
-                # Actually, standard Trainer logs 'tr_loss' which is the running average of loss.
-
-                # Simple approach: Let's log the value of the loss component *as contributing to the gradient*, 
-                # but scaled up by accumulation steps so it represents the "per-batch" loss magnitude,
-                # which is more intuitive.
-                # Note: `sft_loss` from `super().compute_loss` IS already divided by accumulation steps
-                # if `num_items_in_batch` is passed. So to get the "actual" loss value (batch average),
-                # we multiply by acc_steps.
                 sft_loss_scalar *= self.args.gradient_accumulation_steps
-                
-                # kd_loss is the raw DINO loss, which is what we want to track.
-                # The 'kd_loss_weighted' is the one that gets divided by `gradient_accumulation_steps`.
-                # We log the raw KD loss (unweighted, unscaled) as 'loss/kd_loss'.
-                
+           
            self.custom_metrics["train"]["sft_loss"].update(sft_loss_scalar)
            self.custom_metrics["train"]["kd_loss"].update(kd_loss_scalar)
 

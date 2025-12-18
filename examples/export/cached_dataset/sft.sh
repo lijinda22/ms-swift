@@ -103,7 +103,7 @@ swift sft \
 
 
 # 直接sft with kd
-export KD_LOSS_WEIGHT=0.5
+export KD_LOSS_WEIGHT=0.2
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NPROC_PER_NODE=3 \
 IMAGE_MAX_TOKEN_NUM=1024 \
