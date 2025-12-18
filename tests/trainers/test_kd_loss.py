@@ -29,7 +29,7 @@ class MockTeacher(nn.Module):
     def __init__(self, embed_dim, patch_size=14):
         super().__init__()
         self.embed_dim = embed_dim
-        self.patch_embed = type('PE', (), {'patch_size': patch_size})()
+        self.patch_embed = type('PE', (), {'patch_size': int(patch_size)})()
         # Mock parameters
         self.param = nn.Parameter(torch.randn(1, embed_dim))
         

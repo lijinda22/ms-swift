@@ -865,6 +865,8 @@ class SftKdTrainer(Seq2SeqTrainer):
             
             # --- TEACHER FORWARD ---
             _, num_prefix_tokens, forward_fn, patch_size = self._get_teacher_info(t_model)
+            if isinstance(patch_size, tuple):
+                patch_size = patch_size[0]
             
             # Ensure teacher is on correct device/dtype
             first_param = next(t_model.parameters(), None)
