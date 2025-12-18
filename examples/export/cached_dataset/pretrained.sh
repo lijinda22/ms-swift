@@ -35,32 +35,32 @@ swift export \
 
 # lora cpt 
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=1 \
+NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=0,1 \
 MASTER_PORT=29517 \
 swift sft \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --cached_dataset /data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset_kd_20k \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --cached_dataset /data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset_kd_0.1 \
     --torch_dtype bfloat16 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 6 \
+    --per_device_eval_batch_size 6 \
     --split_dataset_ratio 0.02 \
     --num_train_epochs 1 \
     --learning_rate 1e-5 \
-    --gradient_accumulation_steps 8 \
-    --eval_steps 100 \
-    --save_steps 100 \
+    --gradient_accumulation_steps 16 \
+    --eval_steps 200 \
+    --save_steps 200 \
     --save_total_limit 5 \
     --logging_steps 1 \
     --deepspeed zero3 \
     --max_length 4096 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
-    --dataset_num_proc 4 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k \
+    --dataset_num_proc 6 \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt \
     --attn_impl flash_attention_2 \
     --check_model false \
     --load_from_cache_file true \
@@ -69,55 +69,61 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt/logs \
     --train_type lora \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --target_modules all-linear 
+    --target_modules all-linear \
+    --early_stop_interval 3 \
+    --metric_for_best_model loss \
+    --load_best_model_at_end true
 
 # lora cpt with vit kd 
+# Todo: 修改教师模型重跑
 export KD_LOSS_WEIGHT=0.5
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=1 \
+NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
 MASTER_PORT=29516 \
-CUDA_VISIBLE_DEVICES=1 \
+CUDA_VISIBLE_DEVICES=2,3 \
 swift sft \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --cached_dataset /data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset_kd_20k \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --cached_dataset /data/ljd/VLM-R1/dataset/pretrain/pretrain_cached_dataset_kd_0.1 \
     --torch_dtype bfloat16 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 6 \
+    --per_device_eval_batch_size 6 \
     --split_dataset_ratio 0.02 \
     --num_train_epochs 1 \
     --learning_rate 1e-5 \
-    --gradient_accumulation_steps 8 \
-    --eval_steps 100 \
-    --save_steps 100 \
-    --save_total_limit 2 \
+    --gradient_accumulation_steps 16 \
+    --eval_steps 200 \
+    --save_steps 200 \
+    --save_total_limit 5 \
     --logging_steps 1 \
     --deepspeed zero3 \
     --max_length 4096 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
-    --dataset_num_proc 4 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k_kd_w${KD_LOSS_WEIGHT} \
+    --dataset_num_proc 6 \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT} \
     --attn_impl flash_attention_2 \
     --check_model false \
     --load_from_cache_file true \
     --freeze_vit False \
     --freeze_aligner False \
     --gradient_checkpointing true \
-    --vit_gradient_checkpointing true \
+    --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k_kd_w${KD_LOSS_WEIGHT}/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT}/logs \
     --train_type lora \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear \
-    --kd_teacher_model_type conchv1_5 conch uni uni2 \
-    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
+    --kd_teacher_model_type conchv1_5 uni2 virchow2 \
+    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/uni2/pytorch_model.bin /data/ckpt/virchow2/pytorch_model.bin \
     --kd_loss_weight ${KD_LOSS_WEIGHT} \
-    --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_20k_kd_w0.5/v0-20251213-214440/checkpoint-100/ 
+    --early_stop_interval 3 \
+    --metric_for_best_model loss \
+    --load_best_model_at_end true

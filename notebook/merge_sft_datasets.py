@@ -105,9 +105,10 @@ def process_close_cot_format(item):
     return {"messages": messages, "images": [item["image_path"]]}
 
 
-def process_close_subset_format(item):
+def process_close_question_format(item):
     """
-    Processes data in pathgen_instruct_close_subset format.
+    Processes data in pathgen_instruct_close_subset format or classification format.
+    Applies CLOSE_QUESTION_TEMPLATE to the question.
     e.g.
     {
         "image": "...",
@@ -176,9 +177,11 @@ def process_pathvqa_format(item):
 
 
 
-def generate_classification_subset(base_path, sample_size=10000):
+def generate_classification_subset(base_path, sample_size=100000):
     """
     Collects classification datasets, samples 10k items, and saves to a JSONL file in base_path.
+    The output items contain raw 'question'. The 'process_close_question_format' function
+    will be used later to apply CLOSE_QUESTION_TEMPLATE.
     """
     print("Generating classification subset...")
     classify_base_dir = "/data/ljd/Pathology_FM_LLM/expriment/classify"
@@ -241,78 +244,72 @@ def generate_classification_subset(base_path, sample_size=10000):
 def main():
     """
     Main function to process SFT datasets.
-    Saves each dataset to a separate file AND merges them into a single file.
+    Saves each dataset group to separate files.
+    Does NOT merge everything into a single file anymore.
     """
     base_path = "/data/ljd/VLM-R1/dataset/sft/"
-    output_dir = os.path.join(base_path, "swiftsft_dataset")
+    output_dir = os.path.join(base_path, "swiftsft_dataset_new")
     os.makedirs(output_dir, exist_ok=True)
     
-    merged_temp_file = os.path.join(output_dir, "merged_temp.jsonl")
-
-    # Mapping of filenames to their processing function, source format type, and source name
-    # types: "json", "jsonl", "pathmmu_nested"
-    datasets_to_process = [
+    # Group 1: Datasets to be merged into 'pathgen_vqa'
+    pathgen_vqa_sources = [
         ("llava_instruct_20000.json", process_llava_format, "json", "llava_instruct"),
         ("pathgen_detail_desc_68362.jsonl", process_desc_format, "jsonl", "pathgen_detail_desc"),
         ("pathgen_instruct_close_cot_39166.jsonl", process_close_cot_format, "jsonl", "pathgen_instruct_close_cot"),
-        ("pathgen_instruct_close_subset_96289.jsonl", process_close_subset_format, "jsonl", "pathgen_instruct_close_subset"),
+        ("pathgen_instruct_close_subset_96289.jsonl", process_close_question_format, "jsonl", "pathgen_instruct_close_subset"),
         ("pathgen_instruct_open_102842.json", process_llava_format, "json", "pathgen_instruct_open"),
+    ]
+
+    # Group 2: Independent datasets (processed separately)
+    independent_sources = [
         ("pathmmu.json", process_pathmmu_format, "pathmmu_nested", "pathmmu"),
         ("pathvqa_eval_pathology.json", process_pathvqa_format, "json", "pathvqa_eval"),
         ("pathvqa_train_pathology.json", process_pathvqa_format, "json", "pathvqa_train"),
+        ("pathvqa_test_pathology.json", process_pathvqa_format, "json", "pathvqa_test"),
     ]
 
-    # Generate and add classification subset
-    # Pass base_path so it saves in the same dir as input files
+    # Generate and add classification subset to independent sources
     cls_filename = generate_classification_subset(base_path)
     if cls_filename:
-        datasets_to_process.append((cls_filename, process_close_subset_format, "jsonl", "classification_subset"))
+        independent_sources.append((cls_filename, process_close_question_format, "jsonl", "classification_subset"))
 
     print(f"Output directory: {output_dir}")
-    print(f"Temp merged file: {merged_temp_file}")
-
+    
     total_records_all = 0
 
-    with open(merged_temp_file, "w", encoding="utf-8") as merged_outfile:
-        for filename, processor, file_type, source_name in datasets_to_process:
+    # --- Process Group 1: PathGen VQA (Merged) ---
+    print("\n=== Processing PathGen VQA Group ===")
+    pathgen_vqa_temp = os.path.join(output_dir, "pathgen_vqa_temp.jsonl")
+    pathgen_vqa_count = 0
+    
+    with open(pathgen_vqa_temp, "w", encoding="utf-8") as pathgen_outfile:
+        for filename, processor, file_type, source_name in pathgen_vqa_sources:
             input_filepath = os.path.join(base_path, filename)
-            
-            # Temporary output filename, will be renamed after processing to include count
-            temp_output_filename = f"{source_name}_temp.jsonl"
-            temp_output_filepath = os.path.join(output_dir, temp_output_filename)
-            
-            print(f"\nProcessing {filename}...")
+            print(f"Processing {filename} for pathgen_vqa...")
 
             if not os.path.exists(input_filepath):
                 print(f"Warning: File not found at {input_filepath}. Skipping.")
                 continue
 
-            current_file_records = 0
             try:
-                with open(input_filepath, "r", encoding="utf-8") as infile, \
-                     open(temp_output_filepath, "w", encoding="utf-8") as outfile:
-                    
+                with open(input_filepath, "r", encoding="utf-8") as infile:
                     if file_type == "json":
-                        # Handles files containing a JSON list of objects
                         data = json.load(infile)
-                        
                         # Special handling: downsample llava_instruct to 5k
                         if "llava_instruct" in filename:
-                             print(f"Downsampling {filename} to 5000 items...")
-                             if len(data) > 5000:
-                                 data = random.sample(data, 5000)
+                                print(f"Downsampling {filename} to 5000 items...")
+                                if len(data) > 5000:
+                                    data = random.sample(data, 5000)
 
                         for item in tqdm(data, desc=f"Converting {filename}"):
                             new_record = processor(item)
-                            new_record["source"] = source_name
+                            new_record["source"] = source_name # Keep original source name in record
                             
                             json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
-                            outfile.write(json_line)
-                            merged_outfile.write(json_line)
-                            
-                            current_file_records += 1
+                            pathgen_outfile.write(json_line)
+                            pathgen_vqa_count += 1
+                    
                     elif file_type == "jsonl":
-                        # Handles JSONL files (one JSON object per line)
                         for line in tqdm(infile, desc=f"Converting {filename}"):
                             try:
                                 item = json.loads(line)
@@ -320,59 +317,142 @@ def main():
                                 new_record["source"] = source_name
                                 
                                 json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
-                                outfile.write(json_line)
-                                merged_outfile.write(json_line)
-                                
-                                current_file_records += 1
+                                pathgen_outfile.write(json_line)
+                                pathgen_vqa_count += 1
                             except json.JSONDecodeError:
                                 continue
-                    elif file_type == "pathmmu_nested":
-                        # Handles pathmmu.json which has nested structure
-                        data = json.load(infile)
+            except Exception as e:
+                    print(f"Error processing file {filename}: {e}")
+
+    # Rename pathgen_vqa file
+    final_pathgen_name = f"pathgen_vqa_{pathgen_vqa_count}.jsonl"
+    final_pathgen_path = os.path.join(output_dir, final_pathgen_name)
+    if os.path.exists(final_pathgen_path):
+        os.remove(final_pathgen_path)
+    os.rename(pathgen_vqa_temp, final_pathgen_path)
+    print(f"Saved {pathgen_vqa_count} records to {final_pathgen_path}")
+    total_records_all += pathgen_vqa_count
+
+
+    # --- Process Group 2: Independent Sources ---
+    print("\n=== Processing Independent Sources ===")
+    for filename, processor, file_type, source_name in independent_sources:
+        input_filepath = os.path.join(base_path, filename)
+        
+        # Temporary output filename
+        temp_output_filename = f"{source_name}_temp.jsonl"
+        temp_output_filepath = os.path.join(output_dir, temp_output_filename)
+        
+        print(f"\nProcessing {filename}...")
+
+        if not os.path.exists(input_filepath):
+            print(f"Warning: File not found at {input_filepath}. Skipping.")
+            continue
+
+        current_file_records = 0
+        try:
+            with open(input_filepath, "r", encoding="utf-8") as infile, \
+                    open(temp_output_filepath, "w", encoding="utf-8") as outfile:
+                
+                if file_type == "json":
+                    data = json.load(infile)
+                    for item in tqdm(data, desc=f"Converting {filename}"):
+                        new_record = processor(item)
+                        new_record["source"] = source_name
+                        
+                        json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
+                        outfile.write(json_line)
+                        current_file_records += 1
+                        
+                elif file_type == "jsonl":
+                    for line in tqdm(infile, desc=f"Converting {filename}"):
+                        try:
+                            item = json.loads(line)
+                            new_record = processor(item)
+                            new_record["source"] = source_name
+                            
+                            json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
+                            outfile.write(json_line)
+                            current_file_records += 1
+                        except json.JSONDecodeError:
+                            continue
+
+                elif file_type == "pathmmu_nested":
+                    # Handles pathmmu.json which has nested structure
+                    data = json.load(infile)
+                    # Switch source_name to pathmmu_val for the final filename renaming
+                    source_name = "pathmmu_val"
+
+                    # Extra writers for test/test_tiny
+                    pathmmu_splits_extra = ['test', 'test_tiny']
+                    extra_writers = {}
+                    extra_counts = {s: 0 for s in pathmmu_splits_extra}
+                    extra_temp_paths = {}
+                    
+                    for split in pathmmu_splits_extra:
+                        p = os.path.join(output_dir, f"pathmmu_{split}_temp.jsonl")
+                        extra_temp_paths[split] = p
+                        extra_writers[split] = open(p, "w", encoding="utf-8")
+
+                    try:
                         for sub_source_name, source_data in data.items():
+                            # 1. Process VAL (Write to main outfile)
                             if "val" in source_data:
-                                for item in tqdm(source_data["val"], desc=f"Converting {filename} - {sub_source_name}"):
+                                for item in tqdm(source_data["val"], desc=f"Converting {filename} - {sub_source_name} (val)"):
                                     new_record = processor(item)
-                                    # Combine main source name with sub-source (e.g., pathmmu_PubMed)
-                                    new_record["source"] = f"{source_name}_{sub_source_name}"
+                                    new_record["source"] = f"pathmmu_{sub_source_name}"
                                     
                                     json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
                                     outfile.write(json_line)
-                                    merged_outfile.write(json_line)
+                                    # merged_outfile removed
                                     
                                     current_file_records += 1
-                
-                # Rename the file to include the count
-                final_output_filename = f"{source_name}_{current_file_records}.jsonl"
-                final_output_filepath = os.path.join(output_dir, final_output_filename)
-                
-                # If pathmmu was processed, it might be weird because it has sub-sources but we write to one file "pathmmu_temp".
-                # The logic above writes all pathmmu sub-sources to "pathmmu_temp.jsonl".
-                # So renaming "pathmmu_temp.jsonl" to "pathmmu_{count}.jsonl" is correct.
-                
-                if os.path.exists(final_output_filepath):
-                    os.remove(final_output_filepath)
-                os.rename(temp_output_filepath, final_output_filepath)
-                
-                print(f"Saved {current_file_records} records to {final_output_filepath}")
-                total_records_all += current_file_records
 
-            except Exception as e:
-                print(f"Error processing file {filename}: {e}")
-                if os.path.exists(temp_output_filepath):
-                    os.remove(temp_output_filepath)
+                            # 2. Process TEST / TEST_TINY (Separate files only)
+                            for split in pathmmu_splits_extra:
+                                if split in source_data:
+                                    for item in tqdm(source_data[split], desc=f"Converting {filename} - {sub_source_name} ({split})"):
+                                        new_record = processor(item)
+                                        # Same here
+                                        new_record["source"] = f"pathmmu_{sub_source_name}"
 
-    # Rename fused merged file
-    final_merged_filename = f"merged_{total_records_all}.jsonl"
-    final_merged_filepath = os.path.join(output_dir, final_merged_filename)
-    
-    if os.path.exists(final_merged_filepath):
-        os.remove(final_merged_filepath)
-    os.rename(merged_temp_file, final_merged_filepath)
+                                        json_line = json.dumps(new_record, ensure_ascii=False) + "\n"
+                                        extra_writers[split].write(json_line)
+                                        extra_counts[split] += 1
+                    finally:
+                        for w in extra_writers.values():
+                            w.close()
+
+                    # Rename extra split files
+                    for split in pathmmu_splits_extra:
+                            count = extra_counts[split]
+                            temp_p = extra_temp_paths[split]
+                            if os.path.exists(temp_p):
+                                final_p = os.path.join(output_dir, f"pathmmu_{split}_{count}.jsonl")
+                                if os.path.exists(final_p):
+                                    os.remove(final_p)
+                                os.rename(temp_p, final_p)
+                                print(f"Saved {count} records to {final_p}")
+            
+            # Rename the file to include the count
+            final_output_filename = f"{source_name}_{current_file_records}.jsonl"
+            final_output_filepath = os.path.join(output_dir, final_output_filename)
+            
+            if os.path.exists(final_output_filepath):
+                os.remove(final_output_filepath)
+            os.rename(temp_output_filepath, final_output_filepath)
+            
+            print(f"Saved {current_file_records} records to {final_output_filepath}")
+            total_records_all += current_file_records
+
+        except Exception as e:
+            print(f"Error processing file {filename}: {e}")
+            if os.path.exists(temp_output_filepath):
+                os.remove(temp_output_filepath)
+
 
     print(f"\nFinished processing datasets.")
-    print(f"Total records written: {total_records_all}")
-    print(f"Merged file saved at: {final_merged_filepath}")
+    print(f"Total records processed: {total_records_all}")
 
 
 if __name__ == "__main__":

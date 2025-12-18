@@ -15,7 +15,7 @@ from uni.downstream.extract_patch_features import extract_patch_features_from_da
 from uni.downstream.eval_patch_features.linear_probe import eval_linear_probe
 from uni.downstream.eval_patch_features.metrics import print_metrics
 from uni.get_encoder.conchv1_5 import create_model_from_pretrained as create_conchv1_5
-from uni.get_encoder.get_encoder import get_encoder_uni, get_eval_transforms_uni, get_encoder_uni2
+from uni.get_encoder.get_encoder import get_encoder_uni, get_eval_transforms_uni, get_encoder_uni2, get_encoder_virchow2, get_eval_transforms_virchow2
 from conch.conch import create_model_from_pretrained as create_conch
 
 logging.basicConfig(level=logging.INFO)
@@ -154,7 +154,7 @@ def run_evaluation(dataset_name, train_dl, test_dl, model, device, results_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models", nargs="+", default=["uni", "uni2", "conch", "conchv1.5"], help="Models to run")
+    parser.add_argument("--models", nargs="+", default=["virchow2"], help="Models to run")
     args = parser.parse_args()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,6 +179,9 @@ def main():
             elif model_name == "conch":
                  checkpoint_path = '/data/ckpt/conch/pytorch_model.bin'
                  model, transform = create_conch(model_cfg='conch_ViT-B-16', checkpoint_path=checkpoint_path)
+            elif model_name == "virchow2":
+                 model = get_encoder_virchow2()
+                 transform = get_eval_transforms_virchow2()
             
             if model:
                 model.to(device)

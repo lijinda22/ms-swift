@@ -714,18 +714,12 @@ class VqaBleuReward(ORM):
     """
 
     def __init__(self):
-        try:
-            import jieba
-            from nltk.translate.bleu_score import SmoothingFunction
-        except ImportError:
-            raise ImportError(
-                "jieba and nltk are required for VqaBleuReward. "
-                "Please install them using 'pip install jieba nltk'."
-            )
+        import jieba
+        from nltk.translate.bleu_score import SmoothingFunction
 
     def __call__(self, completions, solution, **kwargs) -> List[float]:
         import jieba
-        from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
+        from nltk.translate.bleu_score import SmoothingFunction,sentence_bleu
 
         tasks = kwargs.get("task", [None] * len(completions))
         rewards = []
@@ -750,56 +744,12 @@ class VqaBleuReward(ORM):
                 continue
 
             # Calculate BLEU-4
-            # weights defaults to (0.25, 0.25, 0.25, 0.25) which is BLEU-4
             bleu_val = sentence_bleu(
                 [reference],
                 hypothesis,
                 smoothing_function=SmoothingFunction().method3
             )
             rewards.append(bleu_val)
-        return rewards
-
-
-
-class GeneralAccuracyReward(ORM):
-    """
-    A unified ORM that dispatches to specific accuracy rewards based on the task type.
-    - 'mcq' / 'cls': Uses McqORM (exact string match).
-    - 'vqa': Uses VqaBleuReward (BLEU-4 score).
-    """
-    def __init__(self, vqa_mode='bleu'):
-        self.mcq_orm = McqORM()
-        if vqa_mode == 'bert':
-            self.vqa_orm = VqaBertReward()
-        else:
-            self.vqa_orm = VqaBleuReward()
-
-    def __call__(self, completions, solution, **kwargs) -> List[float]:
-        tasks = kwargs.get("task", [None] * len(completions))
-        rewards = []
-        
-        # We need to process item by item because they might be different tasks
-        # But ORMs usually take lists. 
-        # For efficiency, we can split indices, but for simplicity in this loop implementation:
-        
-        # Actually, the underlying ORMs are implemented to return None if task doesn't match.
-        # So we can just call both and coalesce the results? 
-        # No, because VqaBleuReward might be expensive to run on everything if we passed the whole list.
-        # Better to iterate.
-        
-        for i, (pred, sol, t) in enumerate(zip(completions, solution, tasks)):
-            if t in ['mcq', 'cls']:
-                # Call McqORM for single item
-                # Wrappers to match list signature
-                res = self.mcq_orm([pred], [sol], task=[t])
-                rewards.append(res[0])
-            elif t == 'vqa':
-                # Call VqaBleuReward for single item
-                res = self.vqa_orm([pred], [sol], task=[t])
-                rewards.append(res[0])
-            else:
-                rewards.append(None)
-                
         return rewards
 
 
@@ -831,9 +781,7 @@ class VqaBertReward(ORM):
                 self.model = self.model.cuda()
             
             VqaBertReward._global_model_cache[self.model_name] = (self.tokenizer, self.model)
-            
-        # Set instance variables to point to cached objects
-        self.tokenizer, self.model = VqaBertReward._global_model_cache[self.model_name]
+            self.tokenizer, self.model = VqaBertReward._global_model_cache[self.model_name]
 
     @staticmethod
     def meanpooling(output, mask):
@@ -888,6 +836,49 @@ class VqaBertReward(ORM):
         return rewards
 
 
+
+class GeneralAccuracyReward(ORM):
+    """
+    A unified ORM that dispatches to specific accuracy rewards based on the task type.
+    - 'mcq' / 'cls': Uses McqORM (exact string match).
+    - 'vqa': Uses VqaBleuReward (BLEU-4 score).
+    """
+    def __init__(self, vqa_mode='bleu'):
+        self.mcq_orm = McqORM()
+        if vqa_mode == 'bert':
+            self.vqa_orm = VqaBertReward()
+        else:
+            self.vqa_orm = VqaBleuReward()
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        tasks = kwargs.get("task", [None] * len(completions))
+        rewards = []
+        
+        # We need to process item by item because they might be different tasks
+        # But ORMs usually take lists. 
+        # For efficiency, we can split indices, but for simplicity in this loop implementation:
+        
+        # Actually, the underlying ORMs are implemented to return None if task doesn't match.
+        # So we can just call both and coalesce the results? 
+        # No, because VqaBleuReward might be expensive to run on everything if we passed the whole list.
+        # Better to iterate.
+        
+        for i, (pred, sol, t) in enumerate(zip(completions, solution, tasks)):
+            if t in ['mcq', 'cls']:
+                # Call McqORM for single item
+                # Wrappers to match list signature
+                res = self.mcq_orm([pred], [sol], task=[t])
+                rewards.append(res[0])
+            elif t == 'vqa':
+                # Call VqaBleuReward for single item
+                res = self.vqa_orm([pred], [sol], task=[t])
+                rewards.append(res[0])
+            else:
+                raise ValueError(f"Unsupported task type: {t}")
+                
+        return rewards
+
+
 class AccuracyBleuReward(GeneralAccuracyReward):
     """
     Unified accuracy reward using BLEU-4 for VQA tasks.
@@ -916,7 +907,6 @@ orms = {
     "mcq": McqORM,
     "vqa_bleu": VqaBleuReward,
     "vqa_bert": VqaBertReward,
-    "accuracy": AccuracyBleuReward,      # Default to BLEU
     "accuracy_bleu": AccuracyBleuReward, # Explicit BLEU
     "accuracy_bert": AccuracyBertReward, # Explicit BERT
 }

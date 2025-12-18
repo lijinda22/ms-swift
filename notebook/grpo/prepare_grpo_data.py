@@ -13,7 +13,6 @@ def ensure_dir(path):
         os.makedirs(path)
 
 # Source files
-PATHGEN_FILE = os.path.join(BASE_DIR, "pathgen_instruct_close_137555.json")
 PATHVQA_TRAIN_FILE = os.path.join(BASE_DIR, "pathvqa_train_pathology.json")
 PATHVQA_EVAL_FILE = os.path.join(BASE_DIR, "pathvqa_eval_pathology.json")
 PATHVQA_TEST_FILE = "/data/dataset/vqa/path-vqa/data_refine/pathvqa_test_pathology.json"
@@ -66,23 +65,7 @@ def save_json(data, filename, use_details_dir=False):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def process_pathgen():
-    print("Processing PathGen...")
-    if not os.path.exists(PATHGEN_FILE):
-        print(f"Warning: {PATHGEN_FILE} not found. Skipping.")
-        return []
 
-    with open(PATHGEN_FILE, 'r', encoding='utf-8') as f:
-        original_data = json.load(f)
-
-    grpo_data = []
-    source = "pathgen"
-    for item in original_data:
-        grpo_item = to_grpo_format(item["image"], item["question"], item["answer"], source)
-        grpo_data.append(grpo_item)
-
-    save_jsonl(grpo_data, f"train_pathgen_{len(grpo_data)}.jsonl", use_details_dir=True)
-    return grpo_data
 
 def process_pathvqa():
     print("Processing PathVQA...")
@@ -138,14 +121,14 @@ def process_pathmmu():
 
     # Structure: { "Source": { "val": [], "test": [], "test_tiny": [] }, ... }
     for source, splits in mmu_data.items():
-        # Train (val split)
-        if "val" in splits:
-            for item in splits["val"]:
+        # Train (test split) -> as requested: "pathmmu 把test中的作为训练集"
+        if "test" in splits:
+            for item in splits["test"]:
                 grpo_item = to_grpo_format(item["img"], item["question"], item["answer"], source)
                 grpo_train_data.append(grpo_item)
         
-        # Test (test + test_tiny splits)
-        for split_name in ["test", "test_tiny"]:
+        # Test (val + test_tiny splits) -> as requested: "把val. test_tiny作为测试集"
+        for split_name in ["val", "test_tiny"]:
             if split_name in splits:
                 for item in splits[split_name]:
                     test_data.append({
@@ -231,13 +214,13 @@ def process_classification_datasets():
 def main():
     ensure_dir(OUTPUT_DIR)
     ensure_dir(DETAILS_DIR)
-    pathgen_data = process_pathgen()
+    # pathgen_data = process_pathgen() # Process removed
     pathvqa_data = process_pathvqa()
     pathmmu_data = process_pathmmu()
     
     # Merge VQA train data
     all_vqa_train = []
-    if pathgen_data: all_vqa_train.extend(pathgen_data)
+    # if pathgen_data: all_vqa_train.extend(pathgen_data)
     if pathvqa_data: all_vqa_train.extend(pathvqa_data)
     if pathmmu_data: all_vqa_train.extend(pathmmu_data)
     

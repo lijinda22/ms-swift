@@ -1,48 +1,88 @@
+# swift export \
+#     --model /data/ckpt/Qwen3-VL-2B-Instruct \
+#     --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/merged_334674.jsonl" \
+#     --max_length 8192 \
+#     --dataset_num_proc 8 \
+#     --split_dataset_ratio 0.05 \
+#     --to_cached_dataset true \
+#     --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset
+
+# 改为4b模型
+# pathgen_vqa_311k数据集
 swift export \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
-    --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/merged_334674.jsonl" \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --dataset /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathgen_vqa_311659.jsonl \
     --max_length 8192 \
     --dataset_num_proc 8 \
     --split_dataset_ratio 0.05 \
     --to_cached_dataset true \
-    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset
+    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathgen_vqa_311k
+
+# pathmmu_6k
+swift export \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --dataset /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathmmu_test_6328.jsonl \
+    --max_length 8192 \
+    --dataset_num_proc 8 \
+    --split_dataset_ratio 0.05 \
+    --to_cached_dataset true \
+    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathmmu_6k
+
+# pathvqa: 12k
+swift export \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathvqa_train_9476.jsonl" "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathvqa_eval_3016.jsonl" \
+    --max_length 8192 \
+    --dataset_num_proc 8 \
+    --split_dataset_ratio 0.05 \
+    --to_cached_dataset true \
+    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathvqa_12k
+
+# classification: classification_subset_100000.jsonl
+swift export \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
+    --dataset /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/classification_subset_100000.jsonl \
+    --max_length 8192 \
+    --dataset_num_proc 8 \
+    --split_dataset_ratio 0.05 \
+    --to_cached_dataset true \
+    --output_dir /data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_classification_100k
+
+
 
 # 视觉蒸馏包括以下对比实验
 # 0. 原始VLM模型
 # 1. 无kd, sft, cpt+sft
 # 2. 有kd, sft_kd, cpt_kd+sft_kd
-# 对比实验: 1个教师 / 多个教师
-# 消融实验: 教师相似性权重/均值分配
 
-# 4 * 44GiB; 15.5s/it
 # 直接sft
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=2 \
+NPROC_PER_NODE=3 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
-MASTER_PORT=29502 \
-CUDA_VISIBLE_DEVICES=2,3 \
+MASTER_PORT=29510 \
+CUDA_VISIBLE_DEVICES=0,2,1 \
 swift sft \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
     --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
+    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathmmu_6k" \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
     --learning_rate 5e-5 \
-    --gradient_accumulation_steps 16 \
-    --eval_steps 100 \
-    --save_steps 100 \
-    --logging_steps 5 \
+    --gradient_accumulation_steps 12 \
+    --eval_steps 20 \
+    --save_steps 20 \
+    --logging_steps 1 \
     --max_length 3072 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
-    --dataset_num_proc 2 \
+    --dataset_num_proc 6 \
     --save_total_limit 5 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -50,44 +90,47 @@ swift sft \
     --freeze_vit False \
     --freeze_aligner False \
     --gradient_checkpointing true \
-    --vit_gradient_checkpointing true \
+    --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft/logs \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear \
-    --resume_from_checkpoint /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/v0-20251212-222150/checkpoint-600/
+    --early_stop_interval 3 \
+    --metric_for_best_model loss \
+    --load_best_model_at_end true
+    
 
 
 # 直接sft with kd
 export KD_LOSS_WEIGHT=0.5
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=2 \
+NPROC_PER_NODE=3 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
-MASTER_PORT=29509 \
-CUDA_VISIBLE_DEVICES=4,5 \
+MASTER_PORT=29517 \
+CUDA_VISIBLE_DEVICES=0,2,1 \
 swift sft \
-    --model /data/ckpt/Qwen3-VL-2B-Instruct \
+    --model /data/ckpt/Qwen3-VL-4B-Instruct \
     --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
+    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathmmu_6k" \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 8 \
+    --per_device_eval_batch_size 4 \
     --learning_rate 5e-5 \
-    --gradient_accumulation_steps 32 \
-    --eval_steps 200 \
-    --save_steps 200 \
-    --logging_steps 5 \
-    --max_length 4096 \
+    --gradient_accumulation_steps 12 \
+    --eval_steps 20 \
+    --save_steps 20 \
+    --logging_steps 1 \
+    --max_length 3072 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
-    --dataset_num_proc 2 \
+    --dataset_num_proc 6 \
     --save_total_limit 5 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_${KD_LOSS_WEIGHT} \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT} \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -97,150 +140,13 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_${KD_LOSS_WEIGHT}/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT}/logs \
     --lora_rank 8 \
     --lora_alpha 16 \
     --target_modules all-linear \
-    --kd_teacher_model_type conchv1_5 conch uni uni2 \
-    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
-    --kd_loss_weight ${KD_LOSS_WEIGHT} 
-
-    
-# cpt+sft
-PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=2 \
-IMAGE_MAX_TOKEN_NUM=1024 \
-VIDEO_MAX_TOKEN_NUM=128 \
-FPS_MAX_FRAMES=16 \
-MASTER_PORT=29503 \
-CUDA_VISIBLE_DEVICES=4,5 \
-swift sft \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v3-20251201-111741/checkpoint-1600 \
-    --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
-    --num_train_epochs 1 \
-    --split_dataset_ratio 0.05 \
-    --torch_dtype bfloat16 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --learning_rate 2e-5 \
-    --gradient_accumulation_steps 16 \
-    --eval_steps 200 \
-    --save_steps 200 \
-    --logging_steps 5 \
-    --max_length 4096 \
-    --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
-    --dataset_num_proc 2 \
-    --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft \
-    --deepspeed zero3 \
-    --use_liger_kernel true \
-    --attn_impl flash_attention_2 \
-    --check_model false \
-    --freeze_vit False \
-    --freeze_aligner False \
-    --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
-    --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft/logs \
-    --lora_rank 8 \
-    --lora_alpha 16 \
-    --target_modules all-linear
-
-
-
-
-# cpt+sft, distillation
-KD_LOSS_WEIGHT=0.2 \
-NPROC_PER_NODE=2 \
-IMAGE_MAX_TOKEN_NUM=1024 \
-VIDEO_MAX_TOKEN_NUM=128 \
-FPS_MAX_FRAMES=16 \
-MASTER_PORT=29541 \
-CUDA_VISIBLE_DEVICES=0,1 \
-swift sft \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v3-20251201-111741/checkpoint-1600 \
-    --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset/sft_cached_dataset" \
-    --num_train_epochs 1 \
-    --split_dataset_ratio 0.05 \
-    --torch_dtype bfloat16 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --learning_rate 2e-5 \
-    --gradient_accumulation_steps 16 \
-    --eval_steps 100 \
-    --save_steps 100 \
-    --logging_steps 5 \
-    --max_length 4096 \
-    --warmup_ratio 0.05 \
-    --dataloader_num_workers 4 \
-    --dataset_num_proc 2 \
-    --save_total_limit 2 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_mse_patch_w${KD_LOSS_WEIGHT} \
-    --deepspeed zero3 \
-    --use_liger_kernel true \
-    --attn_impl flash_attention_2 \
-    --lora_rank 8 \
-    --lora_alpha 16 \
-    --target_modules all-linear \
-    --check_model false \
-    --freeze_vit False \
-    --freeze_aligner False \
-    --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
-    --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_mse_patch_w${KD_LOSS_WEIGHT}/logs \
-    --kd_teacher_model_type conchv1_5 conch uni uni2 \
-    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/conch/pytorch_model.bin /data/ckpt/uni/pytorch_model.bin /data/ckpt/uni2/pytorch_model.bin \
+    --kd_teacher_model_type conchv1_5 uni2 virchow2 \
+    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/uni2/pytorch_model.bin /data/ckpt/virchow2/pytorch_model.bin \
     --kd_loss_weight ${KD_LOSS_WEIGHT} \
-    --kd_loss_type mse \
-    --kd_token_strategy patch_mse \
-    --kd_weight_strategy similarity_weighted
-
-
-# SFT, distillation test 仅用于调试
-NPROC_PER_NODE=2 \
-IMAGE_MAX_TOKEN_NUM=1024 \
-VIDEO_MAX_TOKEN_NUM=128 \
-FPS_MAX_FRAMES=16 \
-MASTER_PORT=29541 \
-CUDA_VISIBLE_DEVICES=4,5 \
-swift sft \
-    --model /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt/v3-20251201-111741/checkpoint-1600 \
-    --train_type lora \
-    --dataset "/data/ljd/VLM-R1/dataset/sft/deprecated/merged_sft_dataset_sample1k.jsonl" \
-    --max_steps 2 \
-    --torch_dtype bfloat16 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 1 \
-    --learning_rate 2e-5 \
-    --gradient_accumulation_steps 1 \
-    --save_steps 2 \
-    --logging_steps 2 \
-    --max_length 4096 \
-    --warmup_ratio 0.05 \
-    --dataloader_num_workers 0 \
-    --dataset_num_proc 2 \
-    --save_total_limit 1 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_test \
-    --deepspeed zero3 \
-    --use_liger_kernel true \
-    --attn_impl flash_attention_2 \
-    --lora_rank 8 \
-    --lora_alpha 16 \
-    --target_modules all-linear \
-    --check_model false \
-    --freeze_vit False \
-    --freeze_aligner False \
-    --gradient_checkpointing true \
-    --vit_gradient_checkpointing false \
-    --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_test/logs \
-    --kd_teacher_model_type conchv1_5 \
-    --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin \
-    --kd_loss_weight 0.05 \
-    2>&1 | tee /data/ljd/Pathology_FM_LLM/expriment/output/qwen3_vl_2b_cpt_sft_kd_test/logs/log.txt
-
-
+    --early_stop_interval 3 \
+    --metric_for_best_model loss \
+    --load_best_model_at_end true

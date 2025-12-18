@@ -14,8 +14,10 @@ MODEL_PATHS = {
     # "qwen2.5_vl-7b": "/data/ckpt/Qwen2.5-VL-7B-Instruct/",
     # "patho-r1-7b": "/data/ckpt/Patho-R1-7B/",
     # "lingshu-7b": "/data/ckpt/Lingshu-7B/",
-    "lingshu-32b": "/data/ckpt/Lingshu-32B/",
+    # "lingshu-32b": "/data/ckpt/Lingshu-32B/",
     # "qwen3_vl-2b": "/data/ckpt/Qwen3-VL-2B-Instruct/",
+    "qwen3_vl-2b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/v5-20251213-130919/checkpoint-1242-merged/",
+    "qwen3_vl-2b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_0.5/v0-20251213-135528/checkpoint-1242-merged/"
 }
 
 DATASETS_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/classify"

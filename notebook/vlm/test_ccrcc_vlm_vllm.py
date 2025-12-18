@@ -14,10 +14,10 @@ os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 # Model paths configuration
 MODEL_PATHS = {
     # "qwen2.5_vl-7b": "/data/ckpt/Qwen2.5-VL-7B-Instruct/",
-    "patho-r1-7b": "/data/ckpt/Patho-R1-7B",
+    # "patho-r1-7b": "/data/ckpt/Patho-R1-7B",
     # "lingshu-7b": "/data/ckpt/Lingshu-7B/",
     # "lingshu-32b": "/data/ckpt/Lingshu-32B/",
-    # "qwen3_vl-2b": "/data/ckpt/Qwen3-VL-2B-Instruct/",
+    "qwen3_vl-2b": "/data/ckpt/Qwen3-VL-2B-Instruct/",
 }
 
 def prepare_inputs_for_vllm(messages, processor):
@@ -50,7 +50,7 @@ def eval_model(model_key, test_file):
     llm = LLM(
         model=model_path,
         mm_encoder_tp_mode="data",
-        enable_expert_parallel=True,
+        # enable_expert_parallel=True, # Qwen2.5/3-VL are usually dense models
         tensor_parallel_size=torch.cuda.device_count(),
         seed=0,
         gpu_memory_utilization=0.9, # Adjust if needed

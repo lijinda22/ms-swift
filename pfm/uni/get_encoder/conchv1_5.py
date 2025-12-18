@@ -746,7 +746,7 @@ def create_model_from_pretrained(checkpoint_path: str = None, img_size: int = 22
     eval_transform = T.Compose(
         [
             T.Resize(img_size, interpolation=T.InterpolationMode.BILINEAR),
-            T.CenterCrop(img_size),
+            # T.CenterCrop(img_size),
             T.ToTensor(),
             T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]
@@ -756,12 +756,12 @@ def create_model_from_pretrained(checkpoint_path: str = None, img_size: int = 22
 
 
 if __name__ == "__main__":
-    model, transform = create_model_from_pretrained(img_size=224)
+    model, transform = create_model_from_pretrained()
     batch_size = 16
     batch_inputs = []
 
     for i in range(batch_size):
-        img = torch.rand(3, 512, 512)
+        img = torch.rand(3, 384, 256)
         img_pil = to_pil_image(img)
         img_transformed = transform(img_pil)
         batch_inputs.append(img_transformed)
@@ -771,7 +771,7 @@ if __name__ == "__main__":
     model = model.cuda().eval()
     input_batch = input_batch.cuda()
     output = model(input_batch)
-    features = model.trunk.forward_features(input_batch)
-
+    features = model.forward_features(input_batch)
     print("模型输出尺寸:", output.shape)
     print("特征提取输出尺寸:", features.shape)
+    print("patch_size: ", model.trunk.patch_embed.patch_size)

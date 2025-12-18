@@ -584,7 +584,7 @@ class SftKdTrainer(Seq2SeqTrainer):
         elif teacher_models is not None:
              self.teacher_models = teacher_models
         
-        assert self.teacher_models, "No teacher models found"
+        assert self.teacher_models and len(self.teacher_models) > 0, "No teacher models found"
         
         # Parse weights
         self.kd_loss_weight = sft_args.kd_loss_weight
@@ -606,23 +606,23 @@ class SftKdTrainer(Seq2SeqTrainer):
         num_prefix = 1 # Most ViTs have 1 CLS token
         
         # Case 1: CoCa (Conch) - has .visual.trunk
-        if hasattr(teacher_model, 'visual') and hasattr(teacher_model.visual, 'trunk'):
-            trunk = teacher_model.visual.trunk
-            return trunk.embed_dim, getattr(trunk, 'num_prefix_tokens', 1), trunk.forward_features
+        # if hasattr(teacher_model, 'visual') and hasattr(teacher_model.visual, 'trunk'):
+        #     trunk = teacher_model.visual.trunk
+        #     return trunk.embed_dim, getattr(trunk, 'num_prefix_tokens', 1), trunk.forward_features
         
         # Case 2: CONCHVisionTower (Conch V1.5) - has .trunk
         if hasattr(teacher_model, 'trunk'):
              trunk = teacher_model.trunk
-             return trunk.embed_dim, getattr(trunk, 'num_prefix_tokens', 1), trunk.forward_features
+             return trunk.embed_dim, getattr(trunk, 'num_prefix_tokens', 0), trunk.forward_features, trunk.patch_embed.patch_size
              
         # Case 3: Standard ViT (UNI, UNI2) - is the ViT itself
         if hasattr(teacher_model, 'embed_dim'):
             if hasattr(teacher_model, 'forward_features'):
-                 return teacher_model.embed_dim, getattr(teacher_model, 'num_prefix_tokens', 1), teacher_model.forward_features
+                 return teacher_model.embed_dim, getattr(teacher_model, 'num_prefix_tokens', 0), teacher_model.forward_features, teacher_model.patch_embed.patch_size
             
         # Fallback for timm models
         if hasattr(teacher_model, 'num_features'):
-             return teacher_model.num_features, getattr(teacher_model, 'num_prefix_tokens', 1), getattr(teacher_model, 'forward_features', teacher_model)
+             return teacher_model.num_features, getattr(teacher_model, 'num_prefix_tokens', 0), getattr(teacher_model, 'forward_features', teacher_model), teacher_model.patch_embed.patch_size
              
         raise ValueError(f"Unknown teacher model structure: {teacher_model.__class__.__name__}")
 
@@ -717,7 +717,9 @@ class SftKdTrainer(Seq2SeqTrainer):
                 student_img_idx += num_images_in_sample
 
             elif "teacher_pixel_values" in item:
-                logger.warning_once(f"Sample {i} has teacher_pixel_values but no pixel_values. Ignoring teacher image.")
+                raise ValueError(f"Sample {i} has teacher_pixel_values but no pixel_values.")
+            else:
+                raise ValueError(f"Sample {i} has no pixel_values or teacher_pixel_values.")
 
         if any(teacher_indices_lists):
             # Stack per teacher
@@ -757,7 +759,7 @@ class SftKdTrainer(Seq2SeqTrainer):
         self.kd_modules = nn.ModuleList()
         
         for i, t_model in enumerate(self.teacher_models):
-            teacher_hidden_size, _, _ = self._get_teacher_info(t_model)
+            teacher_hidden_size, _, _, patch_size = self._get_teacher_info(t_model)
             
             kd_mod = KnowledgeDistillationModule(
                 student_hidden_size=student_hidden_size,
@@ -768,35 +770,20 @@ class SftKdTrainer(Seq2SeqTrainer):
             logger.info(f"Initialized KD Component for Teacher {i} ({t_model.__class__.__name__}): {student_hidden_size} -> {teacher_hidden_size} (MSE, {self.kd_token_strategy})")
         
         # CRITICAL: Attach to model so optimizer picks up the parameters!
-        # We use a distinct name to avoid conflict with existing modules.
-        if not hasattr(self.model, "kd_adapters"):
-            self.model.kd_adapters = self.kd_modules
-        else:
-            logger.warning("Model already has 'kd_adapters'. Using existing one (resume?).")
-            self.kd_modules = self.model.kd_adapters
+        self.model.kd_adapters = self.kd_modules
 
         # Attempt to load KD weights if resuming
         if self.args.resume_from_checkpoint:
             ckpt_path = self.args.resume_from_checkpoint
             # If it's a valid directory path
-            if isinstance(ckpt_path, str) and os.path.isdir(ckpt_path):
-                kd_file = os.path.join(ckpt_path, "kd_module.pt")
-                if os.path.exists(kd_file):
-                    logger.info(f"Loading KD adapter weights from {kd_file}...")
-                    # Map location to device/cpu
-                    try:
-                        state_dict = torch.load(kd_file, map_location=self.model.device)
-                        self.kd_modules.load_state_dict(state_dict)
-                        logger.info("Successfully loaded KD adapter weights.")
-                    except RuntimeError as e:
-                        # Handle corrupted checkpoints (e.g. from previous Zero3 save failure)
-                        logger.warning(f"Failed to load KD weights from {kd_file}: {e}")
-                        logger.warning("This might be due to a previous checkpoint saved without gathering parameters (Zero3). Proceeding with RANDOM INITIALIZATION for KD adapters.")
-                    except Exception as e:
-                        logger.warning(f"Unexpected error loading KD weights: {e}. Proceeding with RANDOM INITIALIZATION.")
-                else:
-                    logger.warning(f"Resume requested ({ckpt_path}) but 'kd_module.pt' not found. parameters will be random.")
-
+            assert isinstance(ckpt_path, str) and os.path.isdir(ckpt_path)
+            kd_file = os.path.join(ckpt_path, "kd_module.pt")
+            assert os.path.exists(kd_file)
+            logger.info(f"Loading KD adapter weights from {kd_file}...")
+            # Map location to device/cpu
+            state_dict = torch.load(kd_file, map_location=self.model.device)
+            self.kd_modules.load_state_dict(state_dict)
+            logger.info("Successfully loaded KD adapter weights.")
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
@@ -815,62 +802,22 @@ class SftKdTrainer(Seq2SeqTrainer):
         sft_loss = sft_loss_outputs[0]
         
         assert self.teacher_models, "No teacher models found"
-        # if not self.teacher_models:
-        #      # Just skip without warning if no teachers (standard SFT)
-        #      return sft_loss_outputs if return_outputs else sft_loss
-        
         assert self.kd_modules is not None, "No KD modules found"
-        # if self.kd_modules is None:
-        #      logger.warning_once("KD Error: kd_modules is None. Initialization failed?")
-        #      return sft_loss_outputs if return_outputs else sft_loss
-
         assert teacher_pixel_values is not None, "No teacher pixel values found"
-        # if teacher_pixel_values is None:
-        #      # Possible if batch has no images or collation failed
-        #      # Check if we expected images
-        #      if "pixel_values" in inputs:
-        #           logger.warning_once("KD Error: batch has pixel_values but no teacher_pixel_values.")
-        #      return sft_loss_outputs if return_outputs else sft_loss
-
         assert self.student_cls_token_buffer is not None, "No student cls token buffer found"
-        # if self.student_cls_token_buffer is None:
-        #      # Hook didn't fire
-        #      has_pixels = "pixel_values" in inputs
-        #      logger.warning_once(f"KD Error: student_cls_token_buffer is None. Hook didn't fire? Has pixels: {has_pixels}")
-        #      return sft_loss_outputs if return_outputs else sft_loss
-        
         # --- Student Feature Processing (Split) ---
         # Qwen3-VL/Qwen2.5-VL output is flattened. We need grid_thw to split.
         assert image_grid_thw is not None, "No image_grid_thw found"
-        # if image_grid_thw is None:
-        #      logger.warning_once("KD Error: image_grid_thw missing in inputs. Cannot split flattened student features. Skipping KD.")
-        #      return sft_loss_outputs if return_outputs else sft_loss
-
         hidden_states = self.student_cls_token_buffer
-        
         split_sizes = (image_grid_thw.to(hidden_states.device).prod(dim=-1) // (self.student_spatial_merge_size ** 2)).tolist()
-        
         assert hidden_states.shape[0] == sum(split_sizes), "Hidden states shape mismatch"
-        # if hidden_states.shape[0] != sum(split_sizes):
-        #     logger.warning_once(f"KD Token Mismatch: Output {hidden_states.shape[0]}, Expected {sum(split_sizes)}. Skipping KD.")
-        #     return sft_loss_outputs if return_outputs else sft_loss
-
         per_image_features = torch.split(hidden_states, split_sizes, dim=0)
-        
-        # Sub-Select student features that correspond to teacher images
-        # OLD: teacher_indices_tensor = teacher_image_indices.to(hidden_states.device)
-        # OLD: student_features_subset = [per_image_features[idx] for idx in teacher_indices_tensor]
-        
         # --- Loop over teachers ---
+        # Todo: 修改蒸馏计算逻辑
         teacher_raw_losses = []
         teacher_sim_scores = []
-        
         for i, (t_model, t_pixels, t_adapter) in enumerate(zip(self.teacher_models, teacher_pixel_values, self.kd_modules)):
-            
-            # Skip invalid/disabled teachers
             assert t_adapter is not None, "No KD adapter found for teacher"
-
-            # Device check for adapter
             if t_adapter.student_projection.weight.dtype != self.model.dtype: t_adapter.to(self.model.dtype)
             if t_adapter.student_projection.weight.device != self.model.device: t_adapter.to(self.model.device)
 
@@ -881,7 +828,7 @@ class SftKdTrainer(Seq2SeqTrainer):
             
             # Teacher Forward
             # Get correct forward function and handle device/dtype
-            _, num_prefix_tokens, forward_fn = self._get_teacher_info(t_model)
+            _, num_prefix_tokens, forward_fn, patch_size = self._get_teacher_info(t_model)
             
             # Ensure teacher is on correct device/dtype (Global check)
             # Use a robust check or just force cast if needed. 
@@ -889,16 +836,14 @@ class SftKdTrainer(Seq2SeqTrainer):
             first_param = next(t_model.parameters(), None)
             if first_param is not None and (first_param.dtype != self.model.dtype or first_param.device != self.model.device):
                 t_model.to(device=self.model.device, dtype=self.model.dtype)
-
             t_pixels = t_pixels.to(self.model.device).to(self.model.dtype)
-            
             with torch.no_grad():
                 t_out = forward_fn(t_pixels) # (B, L_t, D_t)
-            
             loss_sum_for_teacher = 0.0
             sim_sum_for_teacher = 0.0
             valid_sample_count = len(student_features_subset)
-            # print("t_out.shape: ", t_out.shape, " valid_sample_count: ", valid_sample_count)
+            # print("t_out.shape: ", t_out.shape, " valid_sample_count: ", valid_sample_count) 
+            # Todo: 修改 计算相似性和mse loss的逻辑
             # Iterate over batch items (aligned with student_features_subset)
             for k, s_feat in enumerate(student_features_subset):
                 # s_feat: (Student_Tokens, D_s)
@@ -927,12 +872,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                     # Reuse Projected features
                     s_proj = s_mean_proj
                     t_proj = t_cls_proj
-                    
-                    # MSE (Normalized)
-                    # s_proj = F.normalize(s_proj, p=2, dim=-1)
-                    # t_proj = F.normalize(t_proj, p=2, dim=-1)
                     loss_k = F.mse_loss(s_proj, t_proj)
-                        
                     loss_sum_for_teacher += loss_k
                     
                 elif self.kd_token_strategy == "patch_mse":
@@ -940,7 +880,10 @@ class SftKdTrainer(Seq2SeqTrainer):
                     # Teacher: t_feat[num_prefix_tokens:] -> (L_t-prefix, D_t)
                     
                     t_patches_flat = t_feat[num_prefix_tokens:]
-                    # print("t_patches_flat.shape", t_patches_flat.shape) 
+                    # Todo: 根据 t_pixels 计算数量, 和patch_size的倍数 相关
+                    # side_h, side_w = t_pixels.shape -2, -1 / patch_size
+                    # num_patches = side_h * side_w
+                    # 然后reshape 到二维
                     num_patches = t_patches_flat.shape[0]
                     side = int(num_patches**0.5)
                     assert side * side == num_patches, f"Teacher {i} patch count ({num_patches}) is not a perfect square. Skipping."
@@ -952,7 +895,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                     
                     # Student H, W from grid.
                     h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
-                    
+                    # Todo: print h_map, w_map, side_h, side_w, 我需要看比例是否大致正确
                     # Interpolate Teacher to Student Feature Map Size 
                     t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)
                     t_interp = t_interp.to(t_feat.dtype).squeeze(0).permute(1, 2, 0).reshape(-1, t_feat.shape[-1]) # (h*w, D_t)
@@ -962,11 +905,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                     # Project Student to Teacher Dim 
                     s_proj = t_adapter.student_projection(s_feat) # (h*w, D_t)
                     t_proj = t_adapter.teacher_projection(t_interp.to(self.model.dtype))
-                    
-                    # Normalized MSE
-                    # s_proj = F.normalize(s_proj, p=2, dim=-1)
-                    # t_proj = F.normalize(t_proj, p=2, dim=-1)
-
+                    # Todo: 修改 mse loss 计算
                     loss_k = F.mse_loss(s_proj, t_proj)
                     loss_sum_for_teacher += loss_k
             
@@ -980,11 +919,6 @@ class SftKdTrainer(Seq2SeqTrainer):
 
         # --- Aggregation ---
         total_kd_loss = 0.0
-        
-        # User Requirement: 
-        # If cls_mean -> Fixed Weighting
-        # If patch_mse -> Adaptive (Similarity Weighted) Weighting
-        
         if self.kd_token_strategy == "cls_mean":
             # For cls_mean, we typically use Fixed Weighting (Simple Average of teachers)
             # Strategy: Average all teacher losses, then scaling.
@@ -1009,7 +943,6 @@ class SftKdTrainer(Seq2SeqTrainer):
             
             # Apply Global Scale
             total_kd_loss = self.kd_loss_weight * merged_kd_loss
-        
         else:
             raise ValueError(f"Unknown KD token strategy: {self.kd_token_strategy}")
 
