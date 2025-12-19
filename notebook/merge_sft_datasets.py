@@ -6,7 +6,9 @@ from tqdm import tqdm
 # Templates
 CLOSE_QUESTION_TEMPLATE = "{Question}\nPlease output only the final answer option directly. Just one letter (A, B, C, or D) with no explanation or additional text."
 COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. No extra information or text outside of these tags."
+OPEN_COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the answer inside <answer>...</answer> tags. No extra information or text outside of these tags."
 COT_ANSWER_TEMPLATE = "<think>{reasoning}</think> <answer>{answer}</answer>"
+OPEN_COT_ANSWER_TEMPLATE = "<think>{reasoning}</think> <answer>{answer}</answer>"
 
 
 def process_llava_format(item):

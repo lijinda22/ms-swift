@@ -4,7 +4,7 @@ import os
 # Add project root to sys.path to ensure swift can be imported
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from swift.plugin.orm import VqaBleuReward, VqaBertReward
+from swift.plugin.orm import VqaBleuReward, VqaBertReward, VqaEmbeddingReward, AccuracyEmbeddingReward, AccuracyBertReward, AccuracyBleuReward
 
 # Test cases
 # Format: (prediction, reference, description)
@@ -58,6 +58,41 @@ def test_vqa_bert():
     for i, (score, case) in enumerate(zip(scores, test_cases)):
         print(f"Case {i+1} ({case[2]}): Score = {score:.4f}")
 
+def test_vqa_embedding():
+    print("-" * 50)
+    print("Testing VqaEmbeddingReward (Embedding Similarity)")
+    reward_fn = VqaEmbeddingReward()
+    predictions = [t[0] for t in test_cases]
+    solutions = [t[1] for t in test_cases]
+    tasks = ['vqa'] * len(test_cases)
+    scores = reward_fn(predictions, solutions, task=tasks)
+    for i, (score, case) in enumerate(zip(scores, test_cases)):
+        print(f"Case {i+1} ({case[2]}): Score = {score:.4f}")
+
+def test_accuracy_embedding():
+    print("-" * 50)
+    print("Testing AccuracyEmbeddingReward (Unified)")
+    reward_fn = AccuracyBleuReward()
+    # reward_fn = AccuracyBertReward()
+    # reward_fn = AccuracyEmbeddingReward()
+    predictions = [
+        "<answer>A</answer>",
+        "<answer>B</answer>",
+        "<answer>The patient has a tumor.</answer>",
+    ]
+    solutions = [
+        "<answer>A</answer>",
+        "<answer>C</answer>",
+        "<answer>Tumor is detected in the patient.</answer>",
+    ]
+    tasks = ['mcq', 'mcq', 'vqa']
+    scores = reward_fn(predictions, solutions, task=tasks)
+    labels = ["MCQ Match", "MCQ Mismatch", "VQA Similarity"]
+    for i, (score, label) in enumerate(zip(scores, labels)):
+        print(f"Task {i+1} ({tasks[i]} - {label}): Score = {score}")
+
 if __name__ == "__main__":
     test_vqa_bleu()
     test_vqa_bert()
+    test_vqa_embedding()
+    test_accuracy_embedding()

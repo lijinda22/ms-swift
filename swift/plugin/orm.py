@@ -836,6 +836,64 @@ class VqaBertReward(ORM):
         return rewards
 
 
+class VqaEmbeddingReward(ORM):
+    """
+    An ORM for evaluating VQA tasks using embedding cosine similarity (Qwen/Qwen3-Embedding-0.6B).
+    """
+
+    def __init__(self, model_name_or_path="/data/ckpt/Qwen3-Embedding-0.6B"):
+        self.model_name = model_name_or_path
+        self.model = None
+
+    _global_model_cache = {}
+
+    def _load_model(self):
+        if self.model_name in VqaEmbeddingReward._global_model_cache:
+            self.model = VqaEmbeddingReward._global_model_cache[self.model_name]
+        else:
+            from sentence_transformers import SentenceTransformer
+            print(f"Loading Embedding model for reward: {self.model_name}...")
+            # We recommend enabling flash_attention_2 for better acceleration and memory saving,
+            # together with setting `padding_side` to "left":
+            # self.model = SentenceTransformer(
+            #     self.model_name,
+            #     model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+            #     tokenizer_kwargs={"padding_side": "left"},
+            # )
+            self.model = SentenceTransformer(self.model_name)
+            VqaEmbeddingReward._global_model_cache[self.model_name] = self.model
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        tasks = kwargs.get("task", [None] * len(completions))
+
+        # Check if we have any VQA tasks before loading model/processing
+        has_vqa = any(t == 'vqa' for t in tasks)
+        if not has_vqa:
+            return [None] * len(completions)
+
+        self._load_model()
+
+        rewards = []
+        for pred, sol, t in zip(completions, solution, tasks):
+            if t != 'vqa':
+                rewards.append(None)
+                continue
+
+            # Extract content from <answer> tags
+            sol_match = re.search(r"<answer>(.*?)</answer>", sol, re.DOTALL)
+            reference_text = sol_match.group(1).strip() if sol_match else sol.strip()
+
+            pred_match = re.search(r"<answer>(.*?)</answer>", pred, re.DOTALL)
+            hypothesis_text = pred_match.group(1).strip() if pred_match else pred.strip()
+
+            # Encode with prompt_name="query" for queries
+            query_embeddings = self.model.encode([hypothesis_text], prompt_name="query")
+            document_embeddings = self.model.encode([reference_text])
+
+            similarity = self.model.similarity(query_embeddings, document_embeddings)
+            rewards.append(similarity.item())
+        return rewards
+
 
 class GeneralAccuracyReward(ORM):
     """
@@ -843,10 +901,13 @@ class GeneralAccuracyReward(ORM):
     - 'mcq' / 'cls': Uses McqORM (exact string match).
     - 'vqa': Uses VqaBleuReward (BLEU-4 score).
     """
+
     def __init__(self, vqa_mode='bleu'):
         self.mcq_orm = McqORM()
         if vqa_mode == 'bert':
             self.vqa_orm = VqaBertReward()
+        elif vqa_mode == 'embedding':
+            self.vqa_orm = VqaEmbeddingReward()
         else:
             self.vqa_orm = VqaBleuReward()
 
@@ -894,6 +955,14 @@ class AccuracyBertReward(GeneralAccuracyReward):
         super().__init__(vqa_mode='bert')
 
 
+class AccuracyEmbeddingReward(GeneralAccuracyReward):
+    """
+    Unified accuracy reward using Embedding similarity for VQA tasks.
+    """
+    def __init__(self):
+        super().__init__(vqa_mode='embedding')
+
+
 # A registry mapping names to their corresponding ORM classes.
 orms = {
     "toolbench": ReactORM,
@@ -907,6 +976,8 @@ orms = {
     "mcq": McqORM,
     "vqa_bleu": VqaBleuReward,
     "vqa_bert": VqaBertReward,
+    "vqa_embedding": VqaEmbeddingReward,
     "accuracy_bleu": AccuracyBleuReward, # Explicit BLEU
     "accuracy_bert": AccuracyBertReward, # Explicit BERT
+    "accuracy_embedding": AccuracyEmbeddingReward, # Explicit Embedding
 }

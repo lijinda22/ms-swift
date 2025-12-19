@@ -56,33 +56,34 @@ swift export \
 # 2. 有kd, sft_kd, cpt_kd+sft_kd
 
 # 直接sft
+export LORA_RANK=16
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=3 \
+NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
 MASTER_PORT=29510 \
-CUDA_VISIBLE_DEVICES=0,2,1 \
+CUDA_VISIBLE_DEVICES=0,1 \
 swift sft \
     --model /data/ckpt/Qwen3-VL-4B-Instruct \
     --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathmmu_6k" \
+    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathvqa_12k" \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
     --learning_rate 5e-5 \
-    --gradient_accumulation_steps 12 \
-    --eval_steps 20 \
-    --save_steps 20 \
+    --gradient_accumulation_steps 18 \
+    --eval_steps 30 \
+    --save_steps 30 \
     --logging_steps 1 \
     --max_length 3072 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
     --dataset_num_proc 6 \
     --save_total_limit 5 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_pathvqa/qwen3_vl_4b_sft_lorarank${LORA_RANK} \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -92,9 +93,10 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft/logs \
-    --lora_rank 8 \
-    --lora_alpha 16 \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_pathvqa/qwen3_vl_4b_sft_lorarank${LORA_RANK}/logs \
+    --lora_rank ${LORA_RANK} \
+    --lora_alpha $((LORA_RANK * 2)) \
+    --lora_dropout 0.05 \
     --target_modules all-linear \
     --early_stop_interval 3 \
     --metric_for_best_model loss \
@@ -103,34 +105,37 @@ swift sft \
 
 
 # 直接sft with kd
-export KD_LOSS_WEIGHT=0.2
+# Todo: 先执行11小时睡眠再执行下面命令
+
+export KD_LOSS_WEIGHT=0.3
+export LORA_RANK=16
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-NPROC_PER_NODE=3 \
+NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
 VIDEO_MAX_TOKEN_NUM=128 \
 FPS_MAX_FRAMES=16 \
-MASTER_PORT=29517 \
-CUDA_VISIBLE_DEVICES=0,2,1 \
+MASTER_PORT=29514 \
+CUDA_VISIBLE_DEVICES=2,3 \
 swift sft \
     --model /data/ckpt/Qwen3-VL-4B-Instruct \
     --train_type lora \
-    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathmmu_6k" \
+    --cached_dataset "/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/cache_pathvqa_12k" \
     --num_train_epochs 1 \
     --split_dataset_ratio 0.05 \
     --torch_dtype bfloat16 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
     --learning_rate 5e-5 \
-    --gradient_accumulation_steps 12 \
-    --eval_steps 20 \
-    --save_steps 20 \
+    --gradient_accumulation_steps 18 \
+    --eval_steps 30 \
+    --save_steps 30 \
     --logging_steps 1 \
     --max_length 3072 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
     --dataset_num_proc 6 \
     --save_total_limit 5 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT} \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_pathvqa/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT}_lorarank${LORA_RANK} \
     --deepspeed zero3 \
     --use_liger_kernel true \
     --attn_impl flash_attention_2 \
@@ -140,9 +145,10 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT}/logs \
-    --lora_rank 8 \
-    --lora_alpha 16 \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_pathvqa/qwen3_vl_4b_sft_kd_${KD_LOSS_WEIGHT}_lorarank${LORA_RANK}/logs \
+    --lora_rank ${LORA_RANK} \
+    --lora_alpha $((LORA_RANK * 2)) \
+    --lora_dropout 0.05 \
     --target_modules all-linear \
     --kd_teacher_model_type conchv1_5 uni2 virchow2 \
     --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/uni2/pytorch_model.bin /data/ckpt/virchow2/pytorch_model.bin \

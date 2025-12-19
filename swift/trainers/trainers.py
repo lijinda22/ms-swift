@@ -956,7 +956,7 @@ class SftKdTrainer(Seq2SeqTrainer):
                 grid_idx = current_teacher_indices[k]
                 _, h, w = image_grid_thw[grid_idx] # Student Grid Size (Raw)
                 h_map, w_map = h // self.student_spatial_merge_size, w // self.student_spatial_merge_size
-                print("h_map, w_map: ", h_map, w_map, "valid h, w: ", vh, vw)
+                # print("h_map, w_map: ", h_map, w_map, "valid h, w: ", vh, vw)
                 # Interpolate T_patches to (h_map, w_map)
                 # Note: teacher patches are used for both W_k calculation and MSE target
                 t_interp = F.interpolate(t_patches.float(), size=(h_map, w_map), mode='bilinear', align_corners=False)

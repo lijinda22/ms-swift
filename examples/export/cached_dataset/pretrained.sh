@@ -81,6 +81,7 @@ swift sft \
 # lora cpt with vit kd 
 # Todo: 修改教师模型重跑
 export KD_LOSS_WEIGHT=0.5
+export LORA_RANK=16
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NPROC_PER_NODE=2 \
 IMAGE_MAX_TOKEN_NUM=1024 \
@@ -107,7 +108,7 @@ swift sft \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 6 \
     --dataset_num_proc 6 \
-    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT} \
+    --output_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT}_lorarank${LORA_RANK} \
     --attn_impl flash_attention_2 \
     --check_model false \
     --load_from_cache_file true \
@@ -116,10 +117,10 @@ swift sft \
     --gradient_checkpointing true \
     --vit_gradient_checkpointing false \
     --report_to tensorboard \
-    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT}/logs \
+    --logging_dir /data/ljd/Pathology_FM_LLM/expriment/output4paper/cpt/qwen3_vl_4b_cpt_kd_w${KD_LOSS_WEIGHT}_lorarank${LORA_RANK}/logs \
     --train_type lora \
-    --lora_rank 8 \
-    --lora_alpha 16 \
+    --lora_rank ${LORA_RANK} \
+    --lora_alpha ${LORA_RANK} * 2 \
     --target_modules all-linear \
     --kd_teacher_model_type conchv1_5 uni2 virchow2 \
     --kd_teacher_model_path /data/ckpt/conchv1.5/pytorch_model_vision.bin /data/ckpt/uni2/pytorch_model.bin /data/ckpt/virchow2/pytorch_model.bin \

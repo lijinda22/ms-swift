@@ -8,6 +8,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor
 from qwen_vl_utils import process_vision_info
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+import jieba
 from vllm import LLM, SamplingParams
 
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
@@ -15,11 +16,10 @@ os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 MODEL_PATHS = {
     "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
     "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft/v0-20251217-094501/checkpoint-42-merged/",
-    "qwen3_vl-4b-sft-kd-w0.2": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.2/v0-20251217-135258/checkpoint-42-merged/",
-    "qwen3_vl-4b-sft-kd-w0.3": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.3/v0-20251217-094511/checkpoint-42-merged/",
-    "qwen3_vl-4b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.5/v0-20251217-140839/checkpoint-42-merged/",
-    # "qwen3_vl-2b-cpt_sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_sft_20k/v0-20251214-121237/checkpoint-1242-merged/",
-    # "qwen3_vl-2b-cpt_sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_cpt_sft_20k_kd_0.5/v0-20251214-121311/checkpoint-1242-merged/",
+    "qwen3_vl-4b-sft-kd-w0.2": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.2/v3-20251218-223605/checkpoint-42-merged/",
+    "qwen3_vl-4b-sft-kd-w0.3": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.3/v0-20251219-093913/checkpoint-42-merged/",
+    "qwen3_vl-4b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.5/v0-20251218-223652/checkpoint-42-merged/",
+    "qwen3_vl-4b-sft-kd-w0.7": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_mmu/qwen3_vl_4b_sft_kd_0.7/v0-20251219-100425/checkpoint-42-merged/",
 }
 
 PATHMMU_SOURCES = ["PubMed", "EduContent", "PathCLS", "Atlas"]
@@ -116,8 +116,15 @@ def parse_mcq_answer(output_text):
     return parsed
 
 def calculate_bleu4(reference, hypothesis):
-    smoothing = SmoothingFunction().method1
-    return sentence_bleu([reference.lower().split()], hypothesis.lower().split(), smoothing_function=smoothing)
+    # Tokenize using jieba, consistent with swift/plugin/orm.py
+    hyp_tokens = list(jieba.cut(hypothesis))
+    ref_tokens = list(jieba.cut(reference))
+    
+    if not hyp_tokens or not ref_tokens:
+        return 0.0
+        
+    smoothing = SmoothingFunction().method3
+    return sentence_bleu([ref_tokens], hyp_tokens, smoothing_function=smoothing)
 
 def eval_dataset_vllm(llm, processor, data, dataset_name, dataset_type, model_key, batch_size=16):
     
