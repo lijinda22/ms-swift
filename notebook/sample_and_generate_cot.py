@@ -51,11 +51,8 @@ def generate_cot_data(data_to_process, output_filepath, batch_size, llm):
     if os.path.exists(output_filepath):
         with open(output_filepath, "r", encoding="utf-8") as f:
             for line in f:
-                try:
-                    data = json.loads(line)
-                    processed_keys.add((data["image_path"], data["question"]))
-                except:
-                    continue
+                data = json.loads(line)
+                processed_keys.add((data["image_path"], data["question"]))
         
         if processed_keys:
             data_to_process = [

@@ -819,7 +819,7 @@ class VqaBertReward(ORM):
             # Calculate BERT similarity
             # Prepare inputs
             sentences = [reference_text, hypothesis_text]
-            encoded_input = self.tokenizer(sentences, padding=True, truncation=True, return_tensors='pt')
+            encoded_input = self.tokenizer(sentences, padding=True, truncation=True, max_length=512, return_tensors='pt')
             
             if torch.cuda.is_available():
                 encoded_input = {k: v.cuda() for k, v in encoded_input.items()}

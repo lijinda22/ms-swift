@@ -1,4 +1,3 @@
-
 import json
 import os
 import random
@@ -7,13 +6,18 @@ import gc
 import sys
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
+from transformers import AutoProcessor
+from PIL import Image
+from qwen_vl_utils import process_vision_info
 
 # Ensure we can import swift modules if needed (adjust path as necessary)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 try:
     from swift.plugin.orm import VqaBertReward
 except ImportError:
     print("Warning: Could not import VqaBertReward from swift.plugin.orm. OpenQA mining might fail.")
+
 
 # ================= Configuration =================
 MODEL_7B_PATH = "/data/ckpt/Lingshu-7B"
@@ -107,6 +111,9 @@ def load_data():
     print(f"PathVQA loaded count: {len(all_data) - count_after_pathmmu}")
     count_after_pathvqa = len(all_data)
 
+    # all_data 随机选择 50%
+    all_data = random.sample(all_data, int(0.2*len(all_data)))
+    print(f"下采样后 count: {len(all_data)}")
     
     # 3. Classification (Train)
     cls_data = load_classification_data()
@@ -157,7 +164,7 @@ def load_classification_data():
         return []
 
     # 2. Calculate Sampling Targets
-    TARGET_TOTAL = 5000
+    TARGET_TOTAL = 3000
     THRESHOLD_LARGE = 20000 
     
     # Calculate base target count for each
@@ -247,13 +254,12 @@ def mining_phase():
     print("Initializing Lingshu-7B for Hard Mining...")
     llm = LLM(model=MODEL_7B_PATH, 
               tensor_parallel_size=torch.cuda.device_count(), 
-              gpu_memory_utilization=0.95,
+              gpu_memory_utilization=0.8,
               max_model_len=3072)
     
     tokenizer = llm.get_tokenizer()
     
     # Re-init processor
-    from transformers import AutoProcessor
     processor = AutoProcessor.from_pretrained(MODEL_7B_PATH, trust_remote_code=True)
     
     # Process in batches manually because of image loading memory
@@ -283,9 +289,6 @@ def mining_phase():
 
         for item in batch_items:
             try:
-                from qwen_vl_utils import process_vision_info
-                from PIL import Image
-                
                 if item["dataset_type"] == "close":
                     q_text = CLOSE_QUESTION_TEMPLATE.format(Question=item["question"])
                 else:
@@ -428,23 +431,23 @@ def downsample_and_split():
     # "原始数据量的 10%" -> If total is 100k, keep 10k.
     # If I have 20k hard samples, keep 10k.
     # If I have 5k hard samples, keep 5k.
-    limit_cls = 20000 # Rough estimate based on typical size
-    if len(cls_items) > limit_cls:
-        final_generation_list.extend(random.sample(cls_items, limit_cls))
-    else:
-        final_generation_list.extend(cls_items)
+    # limit_cls = 20000 # Rough estimate based on typical size
+    # if len(cls_items) > limit_cls:
+    #     final_generation_list.extend(random.sample(cls_items, limit_cls))
+    # else:
+    final_generation_list.extend(cls_items)
         
     # 2. PathMMU / PathVQA
     # User comment: "pathmmu/pathvqa最多保留 50% 的难样本数量"
     # This means strictly 0.5 * len(hard).
     for k in ["pathmmu", "pathvqa"]:
         items = groups[k]
-        if items:
-            keep_count = int(len(items) * 0.8)
-            # Ensure at least some?
-            if keep_count < 1 and len(items) > 0: keep_count = 1
-            final_generation_list.extend(random.sample(items, keep_count))
-
+    #     if items:
+    #         keep_count = int(len(items) * 0.8)
+    #         # Ensure at least some?
+    #         if keep_count < 1 and len(items) > 0: keep_count = 1
+    #         final_generation_list.extend(random.sample(items, keep_count))
+        final_generation_list.extend(items)
     print(f"Total items for CoT Generation after downsampling: {len(final_generation_list)} (from {len(hard_items)})")
     return final_generation_list
 
@@ -492,7 +495,7 @@ def generation_phase(inputs):
     # Config from sample_and_generate_cot.py
     MAX_IMAGES_PER_PROMPT = 1
     # TENSOR_PARALLEL_SIZE = torch.cuda.device_count() # Already imported
-    GPU_MEMORY_UTILIZATION = 0.95
+    GPU_MEMORY_UTILIZATION = 0.8
     
     llm = LLM(
         model=MODEL_32B_PATH,
@@ -591,10 +594,10 @@ def generation_phase(inputs):
                     # Close/MCQ: specific template
                     # Open: raw question (as per process_pathvqa_format logic in merge_sft_datasets.py)
                     
-                    if item["dataset_type"] == "close":
-                         sft_question = COT_QUESTION_TEMPLATE.format(Question=item["question"])
+                    if original_item["dataset_type"] == "close":
+                         sft_question = COT_QUESTION_TEMPLATE.format(Question=original_item["question"])
                     else:
-                         sft_question = OPEN_COT_QUESTION_TEMPLATE.format(Question=item["question"])
+                         sft_question = OPEN_COT_QUESTION_TEMPLATE.format(Question=original_item["question"])
 
                     result = {
                         "messages": [ 
