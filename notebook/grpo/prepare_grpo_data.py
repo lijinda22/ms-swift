@@ -47,7 +47,8 @@ def to_grpo_format(image_path, question, answer, source, task=None):
         ],
         "solution": f"<answer> {answer} </answer>",
         "source": source,
-        "task": task
+        "task": task,
+        "query": question
     }
 
 def save_jsonl(data, filename, use_details_dir=False):
