@@ -100,7 +100,7 @@ def main():
         lines = f.readlines()
 
     # Process randomly sampled 100 lines
-    sample_size = 1000
+    sample_size = 10000
     if len(lines) > sample_size:
         print(f"Randomly sampling {sample_size} items from {len(lines)} total items...")
         lines = random.sample(lines, sample_size)

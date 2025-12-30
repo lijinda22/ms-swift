@@ -262,18 +262,16 @@ class HardSampleMiner:
 
 
 if __name__ == "__main__":
-    # 配置信息
     model_path = '/data/ckpt/Qwen3-VL-2B-Instruct'
     input_dataset = '/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathvqa_eval_3016.jsonl'
-    output_dir = '/data/ljd/VLM-R1/dataset/rl/hard/' 
+    output_dir = '/data/ljd/VLM-R1/dataset/rl/hard/'
     output_file = os.path.join(output_dir, 'pathvqa_eval_3016_hard.jsonl')
 
-    # 初始化并运行
     miner = HardSampleMiner(model_id_or_path=model_path)
     miner.process_dataset(
         input_path=input_dataset,
         output_path=output_file,
-        threshold=0.5, # Prob > 0.5 AND Correct -> Easy (Filter out)
-        batch_size=32  # Smaller batch size for generation usually better to avoid OOM
+        threshold=0.5,
+        batch_size=32
     )
     print(f"Done! Filtered dataset saved to: {output_file}")
