@@ -1096,113 +1096,113 @@ class CoTConsistencyReward(ORM):
         return rewards
 
 
-class ConchGLiNERReward(ORM):
-    """
-    An ORM that extracts morphological features from CoT using GLiNER and 
-    calculates cosine similarity with the image using Conch.
-    """
+# class ConchGLiNERReward(ORM):
+#     """
+#     An ORM that extracts morphological features from CoT using GLiNER and 
+#     calculates cosine similarity with the image using Conch.
+#     """
 
-    def __init__(self, 
-                 conch_model_path="/data/ckpt/conch/pytorch_model.bin",
-                 min_step_ratio=0.0):
-        self.conch_model_path = conch_model_path
-        self.min_step_ratio = min_step_ratio
-        self.conch_model = None
-        self.conch_transform = None
-        self.tokenizer = None 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+#     def __init__(self, 
+#                  conch_model_path="/data/ckpt/conch/pytorch_model.bin",
+#                  min_step_ratio=0.0):
+#         self.conch_model_path = conch_model_path
+#         self.min_step_ratio = min_step_ratio
+#         self.conch_model = None
+#         self.conch_transform = None
+#         self.tokenizer = None 
+#         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    _global_models = {}
+#     _global_models = {}
 
-    def _load_models(self):
-        # Load Conch
-        if 'conch' not in ConchGLiNERReward._global_models:
-            print(f"Loading Conch model: {self.conch_model_path}...")
-            model, transform = create_model_from_pretrained(
-                model_cfg='conch_ViT-B-16',
-                checkpoint_path=self.conch_model_path,
-                device=self.device
-            )
-            model.eval()
-            tokenizer = get_tokenizer()
-            ConchGLiNERReward._global_models['conch'] = (model, transform, tokenizer)
+#     def _load_models(self):
+#         # Load Conch
+#         if 'conch' not in ConchGLiNERReward._global_models:
+#             print(f"Loading Conch model: {self.conch_model_path}...")
+#             model, transform = create_model_from_pretrained(
+#                 model_cfg='conch_ViT-B-16',
+#                 checkpoint_path=self.conch_model_path,
+#                 device=self.device
+#             )
+#             model.eval()
+#             tokenizer = get_tokenizer()
+#             ConchGLiNERReward._global_models['conch'] = (model, transform, tokenizer)
             
-        self.conch_model, self.conch_transform, self.tokenizer = ConchGLiNERReward._global_models['conch']
+#         self.conch_model, self.conch_transform, self.tokenizer = ConchGLiNERReward._global_models['conch']
 
-    def __call__(self, completions, solution, **kwargs) -> List[float]:
-        # Curriculum Learning Check
-        trainer_state = kwargs.get('trainer_state', None)
-        if trainer_state:
-            current_ratio = trainer_state.global_step / trainer_state.max_steps
-            if current_ratio < self.min_step_ratio:
-                # Return 0.0 reward during Phase 1
-                return [0.0] * len(completions)
-        # print("-----kwargs: ", kwargs)
-        self._load_models()
-        rewards = []
+#     def __call__(self, completions, solution, **kwargs) -> List[float]:
+#         # Curriculum Learning Check
+#         trainer_state = kwargs.get('trainer_state', None)
+#         if trainer_state:
+#             current_ratio = trainer_state.global_step / trainer_state.max_steps
+#             if current_ratio < self.min_step_ratio:
+#                 # Return 0.0 reward during Phase 1
+#                 return [0.0] * len(completions)
+#         # print("-----kwargs: ", kwargs)
+#         self._load_models()
+#         rewards = []
         
-        # Check for images in kwargs
-        # Assuming typical SWIFT/VLM format where `images` is a list of paths or PIL objects
-        images = kwargs.get('images', [])
-        if not images:
-            images = kwargs.get('image_paths', [])
+#         # Check for images in kwargs
+#         # Assuming typical SWIFT/VLM format where `images` is a list of paths or PIL objects
+#         images = kwargs.get('images', [])
+#         if not images:
+#             images = kwargs.get('image_paths', [])
 
-        for idx, pred in enumerate(completions):
-            # 1. Get Image
-            img_obj = None
+#         for idx, pred in enumerate(completions):
+#             # 1. Get Image
+#             img_obj = None
             
-            # Map completion index to image (broadcast or 1-to-1)
-            # If batch size of completions matches images, 1-to-1
-            # If 1 image and N completions, broadcast
-            if len(images) == 1:
-                img_obj = images[0]
-            elif idx < len(images):
-                img_obj = images[idx]
-            # print("img_obj: ", img_obj)
-            assert img_obj is not None
-            #img_obj:  [{'bytes': None, 'path': '/data/dataset/vqa/PathMMU/images/5969f686156ee3ce9d4a298d04c2b5e78aa12809512e772c6ac34b7320f038d8.jpg'}]
-            img_obj = img_obj[0]['path'] 
-            assert isinstance(img_obj, str)
-            img_obj = Image.open(img_obj).convert('RGB')
+#             # Map completion index to image (broadcast or 1-to-1)
+#             # If batch size of completions matches images, 1-to-1
+#             # If 1 image and N completions, broadcast
+#             if len(images) == 1:
+#                 img_obj = images[0]
+#             elif idx < len(images):
+#                 img_obj = images[idx]
+#             # print("img_obj: ", img_obj)
+#             assert img_obj is not None
+#             #img_obj:  [{'bytes': None, 'path': '/data/dataset/vqa/PathMMU/images/5969f686156ee3ce9d4a298d04c2b5e78aa12809512e772c6ac34b7320f038d8.jpg'}]
+#             img_obj = img_obj[0]['path'] 
+#             assert isinstance(img_obj, str)
+#             img_obj = Image.open(img_obj).convert('RGB')
 
-            # 2. Extract Morphology from CoT
-            think_match = re.search(r"<think>(.*?)</think>", pred, re.DOTALL)
-            cot = think_match.group(1).strip() if think_match else ""
+#             # 2. Extract Morphology from CoT
+#             think_match = re.search(r"<think>(.*?)</think>", pred, re.DOTALL)
+#             cot = think_match.group(1).strip() if think_match else ""
             
-            if not cot:
-                cot = pred
+#             if not cot:
+#                 cot = pred
 
-            # print("cot: ", cot)
-            # Split cot into sentences
-            # morph_text = cot
-            morph_text = [s.strip() for s in re.split(r'[.!?\n]', cot) if s.strip()]
-            if not morph_text:
-                morph_text = [cot]
+#             # print("cot: ", cot)
+#             # Split cot into sentences
+#             # morph_text = cot
+#             morph_text = [s.strip() for s in re.split(r'[.!?\n]', cot) if s.strip()]
+#             if not morph_text:
+#                 morph_text = [cot]
 
-            with torch.no_grad():
-                # 3. Encode Image
-                image_tensor = self.conch_transform(img_obj).unsqueeze(0).to(self.device)
-                image_emb = self.conch_model.encode_image(image_tensor, proj_contrast=True, normalize=True)
-                # print("image_emb: ", image_emb.shape)
+#             with torch.no_grad():
+#                 # 3. Encode Image
+#                 image_tensor = self.conch_transform(img_obj).unsqueeze(0).to(self.device)
+#                 image_emb = self.conch_model.encode_image(image_tensor, proj_contrast=True, normalize=True)
+#                 # print("image_emb: ", image_emb.shape)
 
-                # 4. Encode Text
-                # morph_text is a list of strings, pass directly to tokenize
-                text_tokens = tokenize(texts=morph_text, tokenizer=self.tokenizer).to(self.device)
-                text_emb = self.conch_model.encode_text(text_tokens)
-                # print("text_emb: ", text_emb.shape)
+#                 # 4. Encode Text
+#                 # morph_text is a list of strings, pass directly to tokenize
+#                 text_tokens = tokenize(texts=morph_text, tokenizer=self.tokenizer).to(self.device)
+#                 text_emb = self.conch_model.encode_text(text_tokens)
+#                 # print("text_emb: ", text_emb.shape)
 
-                # 5. Similarity
-                # image_emb: (1, D), text_emb: (N, D) -> sim: (N,)
-                sims = torch.nn.functional.cosine_similarity(image_emb, text_emb, dim=1)
-                # print("sims: ", sims.shape, sims)
-                # Use average similarity of all sentences
-                raw_sim = sims.mean().item()
-                # print("raw_sim: ", raw_sim)
+#                 # 5. Similarity
+#                 # image_emb: (1, D), text_emb: (N, D) -> sim: (N,)
+#                 sims = torch.nn.functional.cosine_similarity(image_emb, text_emb, dim=1)
+#                 # print("sims: ", sims.shape, sims)
+#                 # Use average similarity of all sentences
+#                 raw_sim = sims.mean().item()
+#                 # print("raw_sim: ", raw_sim)
 
-                # Scale to [0, 1]
-                sim = (raw_sim + 1) / 2
-                rewards.append(sim)
-        return rewards
+#                 # Scale to [0, 1]
+#                 sim = (raw_sim + 1) / 2
+#                 rewards.append(sim)
+#         return rewards
 
 # A registry mapping names to their corresponding ORM classes.
 orms = {
@@ -1222,5 +1222,5 @@ orms = {
     "accuracy_bert": AccuracyBertReward, # Explicit BERT
     "accuracy_embedding": AccuracyEmbeddingReward, # Explicit Embedding
     "cot_consistency": CoTConsistencyReward,
-    "conch_gliner": ConchGLiNERReward,
+    # "conch_gliner": ConchGLiNERReward,
 }

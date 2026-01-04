@@ -41,8 +41,6 @@ class HardSampleMiner:
             device_map=device
         )
         self.model.eval()
-        # Fix: When device='auto', we cannot use the string 'auto' for tensor.to(). 
-        # We must use the model's actual device.
         self.device = self.model.device
         logger.info(f"Model loaded on device: {self.device} (Request: {device})")
         
@@ -104,21 +102,8 @@ class HardSampleMiner:
         
         # Prepare model kwargs
         model_kwargs = {}
-        if all_pixel_values:
-            # Concatenate pixel_values along appropriate dim. 
-            # Reviewing typical Qwen-VL usage in Swift: 
-            # They are usually concatenated to a single tensor (N_total_images, C, H, W) or similar.
-            # encoded['pixel_values'] is typically a tensor.
-            try:
-                model_kwargs['pixel_values'] = torch.cat(all_pixel_values, dim=0).to(self.device)
-            except Exception as e:
-                logger.error(f"Error concatenating pixel_values: {e}")
-        
-        if all_image_grid_thw:
-            try:
-                model_kwargs['image_grid_thw'] = torch.cat(all_image_grid_thw, dim=0).to(self.device)
-            except Exception as e:
-                logger.error(f"Error concatenating image_grid_thw: {e}")
+        model_kwargs['pixel_values'] = torch.cat(all_pixel_values, dim=0).to(self.device)
+        model_kwargs['image_grid_thw'] = torch.cat(all_image_grid_thw, dim=0).to(self.device)
 
         # 3. Model Forward
         outputs = self.model(input_ids=input_ids_tensor, **model_kwargs)
@@ -227,7 +212,7 @@ class HardSampleMiner:
         generated_ids = self.model.generate(
             input_ids=input_ids_tensor,
             attention_mask=attention_mask_tensor,
-            max_new_tokens=64, # Optimized: Reduced from 256. PathVQA answers are usually short.
+            max_new_tokens=512, # Optimized: Reduced from 256. PathVQA answers are usually short.
             pad_token_id=pad_token_id,
             do_sample=False,   # Optimized: Greedy decoding is faster and deterministic
             num_beams=1,
@@ -239,7 +224,6 @@ class HardSampleMiner:
         # generated_ids contains [input_ids + new_tokens]. We slice.
         new_tokens = generated_ids[:, max_len:]
         preds = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-        
         return preds
 
     def _normalize_text(self, text: str) -> str:
@@ -247,29 +231,91 @@ class HardSampleMiner:
             return ""
         return text.strip().lower().replace('.', '').replace(',', '')
 
+    @staticmethod
+    def extract_answer_content(solution_str: str) -> str:
+        assert "<answer>" in solution_str and "</answer>" in solution_str, solution_str
+        start = solution_str.find("<answer>") + len("<answer>")
+        end = solution_str.find("</answer>")
+        return solution_str[start:end].strip()
+
+    def transform_data(self, raw_data_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Transform raw data (new format) to the format expected by mining (messages with image + Q, and A).
+        New format item keys: images, messages (CoT), solution, task, query
+        Target format item: messages=[{role:user, content:<image>+text}, {role:assistant, content:answer}], images=[...]
+        """
+        CLOSE_QUESTION_TEMPLATE = "{Question}\nPlease output only the final answer option directly. Just one letter (A, B, C, or D) with no explanation or additional text."
+        
+        transformed = []
+        for item in raw_data_list:
+            # Check if it is the new format
+            assert 'task' in item and 'query' in item and 'solution' in item, f"Invalid item: {item.keys()}"
+            task = item['task']
+            query = item['query']
+            solution = item['solution']
+            images = item.get('images', [])
+            
+            # 1. Prepare Question
+            if task in ['cls', 'mcq']:
+                question_text = CLOSE_QUESTION_TEMPLATE.format(Question=query)
+            else:
+                # 'vqa' or others -> use raw query
+                question_text = query
+            
+            # 2. Prepare Answer
+            answer_text = self.extract_answer_content(solution)
+            
+            # 3. Construct Messages
+            # content list for multimodal
+            content = []
+            # Add images tags if not present in text? 
+            # Swift template usually handles <image> placeholder. 
+            # The raw 'query' usually doesn't have <image>. 
+            # Let's prepend <image> if we have images.
+            if images:
+                question_text = "<image>" + question_text
+            
+            new_messages = [
+                {"role": "user", "content": question_text},
+                {"role": "assistant", "content": answer_text}
+            ]
+            
+            new_item = {
+                "messages": new_messages,
+                "images": images,
+                "original_item": item # Keep original for reference if needed
+            }
+            transformed.append(new_item)
+        return transformed
+
     def process_dataset(self, 
                         input_path: str, 
                         output_path: str, 
                         threshold: float = 0.5, # Definition of "High Confidence"
-                        keep_ratio: float = None, # Deprecated/Secondary if we use threshold+correctness
                         batch_size: int = 8,
                         limit: int = None):
         """
         处理数据集并过滤简单样本。
         简单样本定义: (Avg Prob > threshold) AND (Pred == GT)
         """
-        data = []
+        raw_data = []
         with open(input_path, 'r', encoding='utf-8') as f:
             for line in f:
-                data.append(json.loads(line))
+                try:
+                    raw_data.append(json.loads(line))
+                except:
+                    pass
 
-        logger.info(f"Loaded {len(data)} samples from {input_path}")
+        logger.info(f"Loaded {len(raw_data)} samples from {input_path}")
         
-        if limit and len(data) > limit:
-            logger.info(f"Randomly sampling {limit} items from {len(data)} total.")
-            data = random.sample(data, limit)
+        if limit and len(raw_data) > limit:
+            logger.info(f"Randomly sampling {limit} items from {len(raw_data)} total.")
+            raw_data = random.sample(raw_data, limit)
         
-        # Optimization: Sort data by length to minimize padding overhead
+        # Transform data to standard format
+        data = self.transform_data(raw_data)
+        
+        # Sort data by length to minimize padding overhead
         # We estimate length by string dump size or just message content length
         logger.info("Sorting data by length to optimize batch processing...")
         data.sort(key=lambda x: len(json.dumps(x['messages'])))
@@ -288,11 +334,11 @@ class HardSampleMiner:
                 messages = item.get('messages', [])
                 images = item.get('images', []) # Extract images
                 
-                if messages and messages[-1]['role'] == 'assistant':
-                    batch_messages.append(messages)
-                    batch_images.append(images)
-                    valid_indices.append(j)
-                    batch_gt_answers.append(messages[-1]['content'])
+                assert messages and messages[-1]['role'] == 'assistant'
+                batch_messages.append(messages)
+                batch_images.append(images)
+                valid_indices.append(j)
+                batch_gt_answers.append(messages[-1]['content'])
             
             if not batch_messages:
                 continue
@@ -305,13 +351,38 @@ class HardSampleMiner:
             
             for idx, avg_prob, pred_text, gt_text in zip(valid_indices, batch_avg_probs, batch_preds, batch_gt_answers):
                 item = batch_data[idx]
-                item['avg_prob'] = avg_prob
-                item['pred_text'] = pred_text
-                item['is_correct'] = self._normalize_text(pred_text) == self._normalize_text(gt_text)
-                item['is_easy'] = (avg_prob > threshold) and item['is_correct']
                 
-                if not item['is_easy']:
-                    results.append(item)
+                if 'original_item' in item:
+                    result_item = item['original_item']
+                else:
+                    result_item = item
+
+                is_correct = self._normalize_text(pred_text) == self._normalize_text(gt_text)
+                is_easy = (avg_prob > threshold) and is_correct
+
+                # Update original item (for saving results)
+                result_item['avg_prob'] = avg_prob
+                result_item['pred_text'] = pred_text
+                result_item['is_correct'] = is_correct
+                result_item['is_easy'] = is_easy
+                
+                # Update transformed item (for full_data check / analysis)
+                if item is not result_item:
+                    item['avg_prob'] = avg_prob
+                    item['pred_text'] = pred_text
+                    item['is_correct'] = is_correct
+                    item['is_easy'] = is_easy
+                
+                if not is_easy:
+                    results.append(result_item)
+
+        # Save Files
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # 1. Filtered Hard Samples
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for item in results:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        logger.info(f"Saved filtered dataset ({len(results)}) to {output_path}")
 
         # Analysis & Visualization
         full_data = [d for d in data if 'avg_prob' in d] # Only processed ones
@@ -335,18 +406,13 @@ class HardSampleMiner:
         plt.pie(counts, labels=['Correct', 'Incorrect'], autopct='%1.1f%%', colors=['green', 'red'])
         plt.title(f'Correctness Ratio (Total: {len(full_data)})')
         
-        plot_path = os.path.join(os.path.dirname(output_path), 'analysis_plot.png')
+        # Use output filename prefix for unique plot name
+        plot_name = os.path.basename(output_path).replace('.jsonl', '_analysis.png')
+        plot_path = os.path.join(os.path.dirname(output_path), plot_name)
+        
         plt.savefig(plot_path)
         plt.close()
         logger.info(f"Saved analysis plot to {plot_path}")
-
-        # Save Files
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        # 1. Filtered Hard Samples
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for item in results:
-                f.write(json.dumps(item, ensure_ascii=False) + '\n')
-        logger.info(f"Saved filtered dataset ({len(results)}) to {output_path}")
 
         # 2. Full Analysis Data
         full_path = output_path.replace('.jsonl', '_full_analysis.jsonl')
@@ -357,17 +423,34 @@ class HardSampleMiner:
 
 
 if __name__ == "__main__":
-    model_path = '/data/ckpt/Qwen3-VL-2B-Instruct'
-    input_dataset = '/data/ljd/VLM-R1/dataset/sft/swiftsft_dataset_new/pathvqa_eval_3016.jsonl'
-    output_dir = '/data/ljd/VLM-R1/dataset/rl/hard/'
-    output_file = os.path.join(output_dir, 'pathvqa_eval_3016_hard.jsonl')
-
+    model_path = '/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_kdw0.5_lorarank16_hypocritical/v0-20251227-160912/checkpoint-2922-merged/'
     miner = HardSampleMiner(model_id_or_path=model_path)
-    miner.process_dataset(
-        input_path=input_dataset,
-        output_path=output_file,
-        threshold=0.6,
-        batch_size=8,  # Recommended: Increased batch size for speed
-        limit=64     # Optional: Sample k items (e.g., 1000) for fast testing
-    )
-    print(f"Done! Filtered dataset saved to: {output_file}")
+    
+    # Input Directory
+    input_dir = '/data/ljd/VLM-R1/dataset/rl/processed/details/'
+    # Output Directory
+    output_dir = '/data/ljd/VLM-R1/dataset/rl/hard/'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Scan for train files
+    train_files = [f for f in os.listdir(input_dir) if f.startswith('train_') and f.endswith('.jsonl')]
+    
+    if not train_files:
+        print(f"No train files found in {input_dir}")
+    else:
+        print(f"Found {len(train_files)} files: {train_files}")
+    
+    for filename in train_files:
+        input_path = os.path.join(input_dir, filename)
+        output_filename = filename.replace('.jsonl', '_hard.jsonl')
+        output_path = os.path.join(output_dir, output_filename)
+        
+        print(f"\nProcessing {filename}...")
+        miner.process_dataset(
+            input_path=input_path,
+            output_path=output_path,
+            threshold=0.6,
+            batch_size=8,
+            # limit=32  # Test with small subset
+        )
+        print(f"Finished {filename}. Saved to {output_path}")

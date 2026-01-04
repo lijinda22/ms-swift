@@ -12,14 +12,11 @@ from qwen_vl_utils import process_vision_info
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import jieba
 import random
-
-# vLLM is the preferred inference engine
 from vllm import LLM, SamplingParams
 import sys
 
 # Ensure we can import swift modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 from swift.plugin.orm import VqaBertReward
 
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
@@ -29,27 +26,16 @@ os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 # ============================================================================
 
 MODEL_PATHS = {
-    "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
-    # "qwen3_vl-4b-thinking": "/data/ckpt/Qwen3-VL-4B-Thinking/",
-    "Lingshu-7B": "/data/ckpt/Lingshu-7B/",
-    "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_lorarank16/v1-20251222-215426/checkpoint-2922-merged/",
-    "qwen3_vl-4b-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v4-20251224-173742/checkpoint-2922-merged/",
-    "qwen3_vl-4b-cpt-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_lorarank16/v0-20251225-042643/checkpoint-2922-merged/",
-    "qwen3_vl-4b-cpt-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_kdw0.5_lorarank16_hypocritical/v0-20251227-160912/checkpoint-2922-merged/",
-    "qwen3_vl-4b-sft-oldckpt": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_lorarank16/v1-20251222-215426/checkpoint-2200-merged/",
-    "qwen3_vl-4b-sft-kd-w0.5_hypocritical-oldckpt": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v4-20251224-173742/checkpoint-2200-merged/",
-    "qwen3_vl-4b-cpt-sft-oldckpt": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_lorarank16/v0-20251225-042643/checkpoint-2200-merged/",
+    "Patho-R1-7B": "/data/ckpt/Patho-R1-7B/",
+    # "Patho-adapter-grpo": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/grpo/qwen3_vl_4b_cpt_sft_kd_mmu_lr5e-6_old/v0-20251230-144744/checkpoint-1200-merged/",
 }
-CLOSE_QUESTION_TEMPLATE = "{Question}\nPlease output only the final answer option directly. Just one letter (A, B, C, or D) with no explanation or additional text."
+COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. No extra information or text outside of these tags."
+OPEN_COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the answer inside <answer>...</answer> tags. No extra information or text outside of these tags."
 
-# Dataset Constants
-PATHMMU_SOURCES = ["PubMed", "EduContent", "PathCLS", "Atlas"]
-CLASSIFICATION_DATASETS = ["CCRCC", "BreaKHis", "chaoyang", "crc100k", "CRC_MSI", "PanCancer-TIL"]
-CLASSIFICATION_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/classify"
-OUTPUT_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/eval_results/sft_test"
+OUTPUT_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/eval_results/rl_test"
 
 # ============================================================================
-# Dataset Registry
+# Dataset Loading
 # ============================================================================
 
 DATASET_CONFIGS = {
@@ -65,23 +51,6 @@ DATASET_CONFIGS = {
     },
 }
 
-# Dynamically add PathMMU datasets
-for source in PATHMMU_SOURCES:
-    for split in ["val", "test_tiny"]:
-        DATASET_CONFIGS[f"pathmmu_{source}_{split}"] = {
-            "path": "/data/ljd/VLM-R1/dataset/sft/pathmmu.json",
-            "type": "mcq",
-            "split": split,
-            "source": source,
-        }
-
-# Dynamically add Classification datasets
-for ds in CLASSIFICATION_DATASETS:
-    DATASET_CONFIGS[f"classify_{ds}"] = {
-        "path": os.path.join(CLASSIFICATION_BASE_DIR, ds, "test.json"),
-        "type": "mcq",
-    }
-
 def load_pathvqa_dataset(config: Dict) -> List[Dict]:
     with open(config["path"], "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -89,38 +58,11 @@ def load_pathvqa_dataset(config: Dict) -> List[Dict]:
         data = [item for item in data if config["filter_fn"](item)]
     return data
 
-def load_pathmmu_dataset(config: Dict) -> List[Dict]:
-    with open(config["path"], "r", encoding="utf-8") as f:
-        data = json.load(f)
-    split = config.get("split", "none")
-    target_source = config.get("source", None)
-    all_items = []
-    for source_name, source_data in data.items():
-        if target_source and source_name != target_source:
-            continue
-        if split in source_data:
-            for item in source_data[split]:
-                item["source"] = source_name
-                all_items.append(item)
-    return all_items
-
-def load_generic_dataset(config: Dict) -> List[Dict]:
-    with open(config["path"], "r", encoding="utf-8") as f:
-        return json.load(f)
-
 def load_dataset_by_name(dataset_name: str) -> Tuple[List[Dict], str]:
     if dataset_name not in DATASET_CONFIGS:
         raise ValueError(f"Unknown dataset: {dataset_name}")
-    
     config = DATASET_CONFIGS[dataset_name]
-    if "pathmmu" in dataset_name:
-        data = load_pathmmu_dataset(config)
-    elif "pathvqa" in dataset_name:
-        data = load_pathvqa_dataset(config)
-    else:
-        data = load_generic_dataset(config)
-    
-    return data, config["type"]
+    return load_pathvqa_dataset(config), config["type"]
 
 # ============================================================================
 # Evaluation Engine
@@ -172,6 +114,12 @@ class Evaluator:
         return parsed
 
     @staticmethod
+    def extract_answer_content(text: str) -> str:
+        if "<answer>" in text and "</answer>" in text:
+            return text.split("<answer>")[-1].split("</answer>")[0].strip()
+        return text.strip()
+
+    @staticmethod
     def calculate_bleu4(reference: str, hypothesis: str) -> float:
         hyp_tokens = list(jieba.cut(hypothesis))
         ref_tokens = list(jieba.cut(reference))
@@ -203,8 +151,10 @@ class Evaluator:
                 question = item["question"]
                 gt_answer = item["answer"]
                 
-                # Use standard template for MCQ/Closed-set
-                question_text = CLOSE_QUESTION_TEMPLATE.format(Question=question.strip()) if dataset_type == "mcq" else question
+                if dataset_type == "vqa":
+                    question_text = OPEN_COT_QUESTION_TEMPLATE.format(Question=question.strip())
+                else: 
+                    question_text = COT_QUESTION_TEMPLATE.format(Question=question.strip())
                 messages = [{"role": "user", "content": [{"type": "image", "image": image_path}, {"type": "text", "text": question_text}]}]
                 
                 try:
@@ -222,26 +172,24 @@ class Evaluator:
                 meta = batch_metadata[j]
                 gt = meta["gt_answer"]
                 
-                # Always save prediction
                 res_item = {**meta, "prediction": gen_text}
                 
                 if dataset_type == "mcq":
-                    # Accuracy for Closed-set/MCQ/Classification
                     parsed = self.parse_mcq_answer(gen_text)
                     is_correct = (parsed == gt.upper())
                     if is_correct: correct += 1
                     res_item.update({"parsed_answer": parsed, "is_acc": is_correct})
                 else:
                     # EM / BLEU-4 / BERT Score for Open-set VQA
-                    is_em = (gen_text.strip().lower() == gt.strip().lower())
+                    answer_content = self.extract_answer_content(gen_text)
+                    is_em = (answer_content.lower() == gt.strip().lower())
                     if is_em: exact_match += 1
-                    bleu = self.calculate_bleu4(gt, gen_text)
+                    bleu = self.calculate_bleu4(gt, answer_content)
                     bleu_scores.append(bleu)
                     
                     bert_s = 0.0
                     try:
-                        # VqaBertReward expects <answer> tags for parsing
-                        b_scores = self._get_bert_reward()([f"<answer>{gen_text}</answer>"], [f"<answer>{gt}</answer>"], task=['vqa'])
+                        b_scores = self._get_bert_reward()([gen_text], [f"<answer>{gt}</answer>"], task=['vqa'])
                         bert_s = b_scores[0] if b_scores and b_scores[0] is not None else 0.0
                     except: pass
                     bert_scores.append(bert_s)
@@ -265,56 +213,17 @@ class Evaluator:
                 "model": self.model_key, 
                 "dataset": dataset_name, 
                 "metrics": metrics, 
-                "results": results # Contains all predictions
+                "results": results 
             }, f, indent=2, ensure_ascii=False)
         return metrics
-
-# ============================================================================
-# Summary Utilities
-# ============================================================================
-
-def aggregate_to_csv(models, datasets):
-    print("\nAggregating results to CSV...")
-    csv_file = os.path.join(OUTPUT_BASE_DIR, "evaluation_summary.csv")
-    summary_data = []
-    
-    for model_key in models:
-        row = {"Model": model_key}
-        for ds_name in datasets:
-            result_file = os.path.join(OUTPUT_BASE_DIR, model_key, f"{ds_name}_results.json")
-            if os.path.exists(result_file):
-                with open(result_file, "r", encoding="utf-8") as f:
-                    try:
-                        res = json.load(f)
-                        m = res.get("metrics", {})
-                        if "accuracy" in m:
-                            row[ds_name] = f"Acc:{m['accuracy']:.4f}"
-                        elif "exact_match" in m:
-                            row[ds_name] = f"EM:{m['exact_match']:.4f}/B4:{m['bleu4']:.4f}/BERT:{m.get('bert_score', 0):.4f}"
-                        else: row[ds_name] = "N/A"
-                    except: row[ds_name] = "Error"
-            else: row[ds_name] = "-"
-        summary_data.append(row)
-        
-    if summary_data:
-        fieldnames = ["Model"] + datasets
-        with open(csv_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(summary_data)
-        print(f"Summary saved to {csv_file}")
-
-# ============================================================================
-# Main
-# ============================================================================
 
 def main():
     print("Available models:", list(MODEL_PATHS.keys()))
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default=None, choices=list(MODEL_PATHS.keys()))
     parser.add_argument("--dataset", type=str, default=None)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--gpu_util", type=float, default=0.9)
+    parser.add_argument("--batch_size", type=int, default=6)
+    parser.add_argument("--gpu_util", type=float, default=0.65)
     parser.add_argument("--limit", type=int, default=None, help="Limit number of samples for testing")
     args = parser.parse_args()
     
@@ -322,36 +231,27 @@ def main():
     selected_datasets = [args.dataset] if args.dataset else list(DATASET_CONFIGS.keys())
     
     for model_key in selected_models:
-        # Check if any dataset needs evaluation for this model
         datasets_to_run = [ds for ds in selected_datasets if not os.path.exists(os.path.join(OUTPUT_BASE_DIR, model_key, f"{ds}_results.json"))]
         
         if not datasets_to_run:
             print(f"All datasets for {model_key} already evaluated.")
             continue
 
-        try:
-            evaluator = Evaluator(model_key, args.gpu_util)
-            for ds_name in datasets_to_run:
-                print(f"\n>>>> Evaluating {ds_name}")
-                data, ds_type = load_dataset_by_name(ds_name)
-                if args.limit:
-                    data = random.sample(data, min(len(data), args.limit))
-                
-                if data:
-                    evaluator.evaluate_dataset(ds_name, data, ds_type, args.batch_size)
+        evaluator = Evaluator(model_key, args.gpu_util)
+        for ds_name in datasets_to_run:
+            print(f"\n>>>> Evaluating {ds_name}")
+            data, ds_type = load_dataset_by_name(ds_name)
+            if args.limit:
+                data = random.sample(data, min(len(data), args.limit))
             
-            # Cleanup
-            del evaluator.llm
-            del evaluator.processor
-            if evaluator.bert_reward: del evaluator.bert_reward
-            gc.collect()
-            torch.cuda.empty_cache()
-            
-        except Exception as e:
-            print(f"Error evaluating {model_key}: {e}")
-            import traceback; traceback.print_exc()
-
-    aggregate_to_csv(selected_models, selected_datasets)
+            if data:
+                evaluator.evaluate_dataset(ds_name, data, ds_type, args.batch_size)
+        
+        del evaluator.llm
+        del evaluator.processor
+        if evaluator.bert_reward: del evaluator.bert_reward
+        gc.collect()
+        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     main()

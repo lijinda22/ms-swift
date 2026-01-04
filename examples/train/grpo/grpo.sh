@@ -20,14 +20,14 @@
 # mmu, vqa, breakhis, ccrcc, chaoyang, crc100k, msi, til
 export KEY=mmu
 case $KEY in
-  breakhis)  DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_BreaKHis_25880.jsonl" ;;
-  ccrcc)     DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_CCRCC_22532.jsonl" ;;
-  chaoyang)  DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_chaoyang_4021.jsonl" ;;
-  crc100k)   DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_crc100k_100000.jsonl" ;;
-  msi)       DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_CRC_MSI_19557.jsonl" ;;
-  til)       DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_PanCancer-TIL_247822.jsonl" ;;
-  mmu)       DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_pathmmu_6328.jsonl" ;;
-  vqa)       DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_pathvqa_12492.jsonl" ;;
+  breakhis)  DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_BreaKHis_25880_hard.jsonl" ;;
+  ccrcc)     DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_CCRCC_22532_hard.jsonl" ;;
+  chaoyang)  DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_chaoyang_4021_hard.jsonl" ;;
+  crc100k)   DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_crc100k_100000_hard.jsonl" ;;
+  msi)       DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_CRC_MSI_19557_hard.jsonl" ;;
+  til)       DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_PanCancer-TIL_247822_hard.jsonl" ;;
+  mmu)       DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_pathmmu_6328_hard.jsonl" ;;
+  vqa)       DATASET="/data/ljd/VLM-R1/dataset/rl/hard/train_pathvqa_12492_hard.jsonl" ;;
   *)         echo "Unknown key: $KEY"; exit 1 ;;
 esac
 
@@ -61,7 +61,7 @@ swift rlhf \
     --load_from_cache_file true \
     --split_dataset_ratio 0.01 \
     --max_completion_length 512 \
-    --max_steps 1200 \
+    --num_train_epochs 1 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
     --learning_rate $LR \
@@ -70,7 +70,7 @@ swift rlhf \
     --eval_strategy 'steps' \
     --eval_steps 200 \
     --save_steps 200 \
-    --save_total_limit 3 \
+    --save_total_limit 10 \
     --logging_steps 1 \
     --output_dir "$OUTPUT_DIR" \
     --warmup_ratio 0.05 \
