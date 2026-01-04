@@ -11,13 +11,13 @@ from os.path import join as j_
 
 # Configuration
 MODEL_PATHS = {
-    # "qwen2.5_vl-7b": "/data/ckpt/Qwen2.5-VL-7B-Instruct/",
-    # "patho-r1-7b": "/data/ckpt/Patho-R1-7B/",
-    # "lingshu-7b": "/data/ckpt/Lingshu-7B/",
-    # "lingshu-32b": "/data/ckpt/Lingshu-32B/",
-    # "qwen3_vl-2b": "/data/ckpt/Qwen3-VL-2B-Instruct/",
-    "qwen3_vl-2b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft/v5-20251213-130919/checkpoint-1242-merged/",
-    "qwen3_vl-2b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/qwen3_vl_2b_sft_kd_0.5/v0-20251213-135528/checkpoint-1242-merged/"
+    "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
+    # "qwen3_vl-4b-thinking": "/data/ckpt/Qwen3-VL-4B-Thinking/",
+    "lingshu-7b": "/data/ckpt/Lingshu-7B/",
+    "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_lorarank16/v1-20251222-215426/checkpoint-2922-merged/",
+    "qwen3_vl-4b-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v4-20251224-173742/checkpoint-2922-merged/",
+    "qwen3_vl-4b-cpt-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_lorarank16/v0-20251225-042643/checkpoint-2922-merged/",
+    "qwen3_vl-4b-cpt-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_kdw0.5_lorarank16_hypocritical/v0-20251227-160912/checkpoint-2922-merged/",
 }
 
 DATASETS_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/classify"
@@ -130,8 +130,8 @@ def extract_features(model, processor, data_batch, model_key):
     if total_tokens == expected_tokens:
         features = list(torch.split(image_embeds, split_sizes))
     elif total_tokens == sum([s + 1 for s in split_sizes]):
-         split_sizes = [s + 1 for s in split_sizes]
-         features = list(torch.split(image_embeds, split_sizes))
+        split_sizes = [s + 1 for s in split_sizes]
+        features = list(torch.split(image_embeds, split_sizes))
     else:
         print(f"Warning: Token count mismatch. Total: {total_tokens}, Expected: {expected_tokens}")
         return None

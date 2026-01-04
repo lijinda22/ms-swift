@@ -1,3 +1,6 @@
+# /data/ljd/VLM-R1/dataset/rl/pathgen_mcq_rl.jsonl
+# 需要有 sft/cpt+sft/cpt+sft_distillation + RL 三种
+# SFT+RL
 # Datasets available:
 # /data/ljd/VLM-R1/dataset/rl/processed/details/train_BreaKHis_25880.jsonl
 # /data/ljd/VLM-R1/dataset/rl/processed/details/train_CCRCC_22532.jsonl
@@ -8,16 +11,6 @@
 # /data/ljd/VLM-R1/dataset/rl/processed/details/train_pathmmu_6328.jsonl
 # /data/ljd/VLM-R1/dataset/rl/processed/details/train_pathvqa_12492.jsonl
 
-# CUDA_VISIBLE_DEVICES=0 \
-# swift rollout \
-#     --model /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v4-20251224-173742/checkpoint-2922-merged/ \
-#     --vllm_data_parallel_size 1 \
-#     --vllm_max_lora_rank 16 \
-#     --vllm_gpu_memory_utilization 0.95 \
-#     --port 8272 \
-#     --vllm_max_model_len 8192 
-
-# mmu, vqa, breakhis, ccrcc, chaoyang, crc100k, msi, til
 export KEY=mmu
 case $KEY in
   breakhis)  DATASET="/data/ljd/VLM-R1/dataset/rl/processed/details/train_BreaKHis_25880.jsonl" ;;
@@ -32,7 +25,7 @@ case $KEY in
 esac
 
 LR=5e-6
-OUTPUT_DIR="/data/ljd/Pathology_FM_LLM/expriment/output4paper/grpo/qwen3_vl_4b_cpt_sft_kd_${KEY}_lr${LR}"
+OUTPUT_DIR="/data/ljd/Pathology_FM_LLM/expriment/output4paper/dapo/qwen3_vl_4b_cpt_sft_kd_${KEY}_lr${LR}"
 CUDA_VISIBLE_DEVICES=2,3 \
 NPROC_PER_NODE=2 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
@@ -43,6 +36,9 @@ MASTER_PORT=29514 \
 no_proxy="localhost,127.0.0.1" \
 swift rlhf \
     --rlhf_type grpo \
+    --dynamic_sample true \
+    --max_resample_times 3 \
+    --loss_type dapo \
     --model /data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_kdw0.5_lorarank16_hypocritical/v0-20251227-160912/checkpoint-2922-merged/ \
     --reward_funcs accuracy_bert format conch_gliner \
     --reward_weights 1.0 0.1 0 \
@@ -87,20 +83,10 @@ swift rlhf \
     --async_generate false \
     --beta 0.001 \
     --epsilon 0.2 \
+    --epsilon_high 0.28 \
     --max_grad_norm 1.0 \
-    --log_entropy true
+    --log_entropy true \
+    --overlong_filter true \
+    --soft_cache_length 448 \
+    --soft_max_length 512 
 
-    # --top_entropy_quantile 0.2 \
-    # --loss_type cispo \
-    # --epsilon_high 5.0
-
-# 1. top_entropy_quantile 0.2 鎺у埗鐔靛湪鍓峹xx%鐨則oken杩涜璁粌浼樺寲
-# 2. --loss_type cispo --epsilon_high 5.0
-# 3. 
-# max_steps
-# num_train_epochs
-
-
-    # --vllm_server_host 127.0.0.1 \
-    # --vllm_server_port 8272 \
-    # --vllm_server_timeout 300 \

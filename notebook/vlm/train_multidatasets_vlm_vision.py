@@ -8,6 +8,10 @@ from sklearn.metrics import accuracy_score, classification_report, f1_score, roc
 from sklearn.utils import shuffle
 from sklearn.preprocessing import normalize
 from os.path import join as j_
+try:
+    from extract_multidatasets_vision_features import MODEL_PATHS
+except ImportError:
+    from notebook.vlm.extract_multidatasets_vision_features import MODEL_PATHS
 
 # Configuration
 DATASETS_BASE_DIR = "/data/ljd/Pathology_FM_LLM/expriment/classify"
@@ -171,7 +175,8 @@ def main():
             print(f"Dataset {name}: No feature directory found.")
             continue
             
-        models = [f.replace(".pt", "") for f in os.listdir(train_feat_dir) if f.endswith(".pt")]
+        # models = [f.replace(".pt", "") for f in os.listdir(train_feat_dir) if f.endswith(".pt")]
+        models = list(MODEL_PATHS.keys())
         # models = ["lingshu-32b"]
         if not models:
              print(f"Dataset {name}: No models found.")

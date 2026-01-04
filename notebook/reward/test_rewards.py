@@ -1,98 +1,95 @@
 import sys
 import os
+import json
+import re
 
 # Add project root to sys.path to ensure swift can be imported
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from swift.plugin.orm import VqaBleuReward, VqaBertReward, VqaEmbeddingReward, AccuracyEmbeddingReward, AccuracyBertReward, AccuracyBleuReward
+from swift.plugin.orm import AccuracyBleuReward, AccuracyBertReward, CoTConsistencyReward, ConchGLiNERReward
 
-# Test cases
-# Format: (prediction, reference, description)
-test_cases = [
-    # Similar pairs (Pathology domain)
-    (
-        "<answer>The image shows a histopathological section of renal cell carcinoma with clear cell type.</answer>",
-        "<answer>This is a microscopic view of clear cell renal cell carcinoma.</answer>",
-        "Similar: Renal Cell Carcinoma"
-    ),
-    (
-        "<answer>Tumor cells are arranged in nests separated by delicate vascular network.</answer>",
-        "<answer>Nests of tumor cells are separated by a fine network of blood vessels.</answer>",
-        "Similar: Tumor Architecture"
-    ),
-    # Dissimilar pairs
-    (
-        "<answer>The tissue contains normal lung alveoli.</answer>",
-        "<answer>The section reveals invasive ductal carcinoma of the breast.</answer>",
-        "Dissimilar: Lung vs Breast Cancer"
-    ),
-    (
-        "<answer>This is a case of acute inflammation with neutrophil infiltration.</answer>",
-        "<answer>The slide shows chronic lymphocytic leukemia.</answer>",
-        "Dissimilar: Inflammation vs Leukemia"
-    )
-]
+def test_complex_rewards():
+    print("=" * 60)
+    print("Testing Complex Rewards (Accuracy, CoT Consistency, ConchGLiNER)")
+    print("=" * 60)
 
-def test_vqa_bleu():
-    print("-" * 50)
-    print("Testing VqaBleuReward (BLEU-4)")
-    reward_fn = VqaBleuReward()
+    # Sample Data provided by user
+    data = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "<image>\nBased on the observed morphology, what type of cells are most likely represented by the small round to oval structures?\nA. Adipocytes\nB. Nerve cells\nC. Fibroblasts\nD. Lymphocytes\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. No extra information or text outside of these tags."
+            },
+            {
+                "role": "assistant",
+                "content": "<think>Upon examining the medical image, the small round to oval structures are dispersed throughout the tissue. These structures are relatively uniform in size and shape, which is characteristic of fibroblasts. Fibroblasts are known for their role in producing extracellular matrix and collagen, which can be inferred from the dense, fibrous appearance of the surrounding tissue. Adipocytes typically have a larger, more irregular shape due to lipid content, which is not observed here. Nerve cells would exhibit distinct morphological features such as axons and dendrites, which are absent in this image. Lymphocytes are generally smaller and more densely packed, often seen in clusters, which does not match the observed pattern. Therefore, the morphology and distribution of these cells strongly suggest they are fibroblasts.\n### Final Answer: C. Fibroblasts</think> <answer>C</answer>"
+            }
+        ],
+        "images": ["/nvme/pathgen/patch_pairs/TCGA-RA-A741/TCGA-RA-A741_21696_46720.png"],
+        "source": "pathgen_instruct_close_cot"
+    }
+
+    # Extract components
+    user_msg = data['messages'][0]['content']
+    assistant_msg = data['messages'][1]['content']
     
-    predictions = [t[0] for t in test_cases]
-    solutions = [t[1] for t in test_cases]
-    tasks = ['vqa'] * len(test_cases)
+    # 1. Prediction and Solution
+    # In a real training scenario, prediction is generated. Here we treat the assistant message as the prediction AND the solution 
+    # (or we can pretend we have a ground truth).
+    # Let's assume the assistant message is the "Prediction" we want to score against itself as "Ground Truth" (expected 1.0)
+    # OR better, let's treat it as a perfect prediction.
+    # pred = GT
+    # prediction = assistant_msg
+    prediction = "<think>Upon examining the medical image, the small round to oval structures are dispersed throughout the tissue. These structures are relatively uniform in size and shape, which is characteristic of fibroblasts. Fibroblasts are known for their role in producing extracellular matrix and collagen, which can be inferred from the dense, fibrous appearance of the surrounding tissue. Adipocytes typically have a larger, more irregular shape due to lipid content, which is not observed here. Nerve cells would exhibit distinct morphological features such as axons and dendrites, which are absent in this image. Lymphocytes are generally smaller and more densely packed, often seen in clusters, which does not match the observed pattern. Therefore, the morphology and distribution of these cells strongly suggest they are fibroblasts.\n### Final Answer: C. Fibroblasts</think> <answer>C</answer>"
+    solution = assistant_msg # Perfect match scenario
     
-    scores = reward_fn(predictions, solutions, task=tasks)
+    # 2. Extract Question for CoTConsistency
+    # Usually the question is in the user message.
+    # Simple extraction: remove <image> tag
+    question = user_msg.replace("<image>", "").strip()
+
+    # 3. Images
+    images = data['images']
+
+    # 4. Prepare batch (size 1)
+    predictions = [prediction]
+    solutions = [solution]
+    tasks = ['vqa'] # or 'mcq' depending on needs, but user mentioned VQA metrics like Bleu/Bert
     
-    for i, (score, case) in enumerate(zip(scores, test_cases)):
-        print(f"Case {i+1} ({case[2]}):\n  Pred: {case[0]}\n  Ref:  {case[1]}\n  Score = {score:.4f}")
+    print(f"Input Data:\nQuestion: {question[:100]}...\nPrediction: {prediction[:100]}...\nImages: {images}\n")
 
-def test_vqa_bert():
-    print("-" * 50)
-    print("Testing VqaBertReward (BERT Similarity)")
-    reward_fn = VqaBertReward()
-    predictions = [t[0] for t in test_cases]
-    solutions = [t[1] for t in test_cases]
-    tasks = ['vqa'] * len(test_cases)
-    scores = reward_fn(predictions, solutions, task=tasks)
-    for i, (score, case) in enumerate(zip(scores, test_cases)):
-        print(f"Case {i+1} ({case[2]}): Score = {score:.4f}")
+    # # --- Test AccuracyBleuReward ---
+    # print("\n[1] Testing AccuracyBleuReward...")
+    # try:
+    #     reward_fn = AccuracyBleuReward()
+    #     score = reward_fn(predictions, solutions, task=tasks)
+    #     print(f"Score: {score[0]}")
+    # except Exception as e:
+    #     print(f"Error: {e}")
 
-def test_vqa_embedding():
-    print("-" * 50)
-    print("Testing VqaEmbeddingReward (Embedding Similarity)")
-    reward_fn = VqaEmbeddingReward()
-    predictions = [t[0] for t in test_cases]
-    solutions = [t[1] for t in test_cases]
-    tasks = ['vqa'] * len(test_cases)
-    scores = reward_fn(predictions, solutions, task=tasks)
-    for i, (score, case) in enumerate(zip(scores, test_cases)):
-        print(f"Case {i+1} ({case[2]}): Score = {score:.4f}")
+    # # --- Test AccuracyBertReward ---
+    # print("\n[2] Testing AccuracyBertReward...")
+    # try:
+    #     reward_fn = AccuracyBertReward()
+    #     # Mocking or loading actual model? The class loads model on call.
+    #     # It might be slow or fail if path is invalid.
+    #     score = reward_fn(predictions, solutions, task=tasks)
+    #     print(f"Score: {score[0]}")
+    # except Exception as e:
+    #     print(f"Error: {e}")
 
-def test_accuracy_embedding():
-    print("-" * 50)
-    print("Testing AccuracyEmbeddingReward (Unified)")
-    reward_fn = AccuracyBleuReward()
-    # reward_fn = AccuracyBertReward()
-    # reward_fn = AccuracyEmbeddingReward()
-    predictions = [
-        "<answer>A</answer>",
-        "<answer>B</answer>",
-        "<answer>The patient has a tumor.</answer>",
-    ]
-    solutions = [
-        "<answer>A</answer>",
-        "<answer>C</answer>",
-        "<answer>Tumor is detected in the patient.</answer>",
-    ]
-    tasks = ['mcq', 'mcq', 'vqa']
-    scores = reward_fn(predictions, solutions, task=tasks)
-    labels = ["MCQ Match", "MCQ Mismatch", "VQA Similarity"]
-    for i, (score, label) in enumerate(zip(scores, labels)):
-        print(f"Task {i+1} ({tasks[i]} - {label}): Score = {score}")
+    # --- Test CoTConsistencyReward ---
+    print("\n[3] Testing CoTConsistencyReward...")
+    # Takes 'query' in kwargs
+    reward_fn = CoTConsistencyReward()
+    score = reward_fn(predictions, solutions, query=[question])
+    print(f"Score: {score[0]}")
+
+    # --- Test ConchGLiNERReward ---
+    # print("\n[4] Testing ConchGLiNERReward...")
+    # reward_fn = ConchGLiNERReward()
+    # score = reward_fn(predictions, solutions, images=images)
+    # print(f"Score: {score[0]}")
 
 if __name__ == "__main__":
-    test_vqa_bleu()
-    test_vqa_bert()
-    test_vqa_embedding()
-    test_accuracy_embedding()
+    test_complex_rewards()

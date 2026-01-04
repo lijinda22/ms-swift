@@ -10,6 +10,9 @@ from swift.llm.dataset.loader import DatasetLoader
 from swift.plugin import extra_callbacks
 from swift.trainers import TrainerFactory, Seq2SeqTrainer
 from swift.trainers import TrainerFactory, Seq2SeqTrainer
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 from pfm.uni.get_encoder.conchv1_5 import create_model_from_pretrained as create_conchv1_5
 from pfm.uni.get_encoder.get_encoder import get_eval_transforms_uni, get_encoder_uni2, get_encoder_virchow2, get_eval_transforms_virchow2
 from swift.utils import (
@@ -51,7 +54,7 @@ class TeacherEncoder:
         if images is not None and not isinstance(images, list):
             images = [images]
         
-        assert images, "No images found in example"
+        assert images is not None and len(images) > 0, "No images found in example"
         image_item = images[0]
         pil_img = None
         if isinstance(image_item, str):
@@ -71,7 +74,7 @@ class TeacherEncoder:
         for transform in self.teacher_transforms:
             result['teacher_pixel_values'].append(transform(pil_img))
         result['has_teacher_image'] = True
-        assert result.get('has_teacher_image', False)
+        assert result.get('has_teacher_image', False), "Failed to get teacher image"
         return result
 
 

@@ -31,11 +31,16 @@ def to_grpo_format(image_path, question, answer, source, task=None):
         else:
             task = "vqa"
 
-    
+    # 根据task选择那个模板?
+
     # COT Template
-    COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the answer inside <answer>...</answer> tags. No extra information or text outside of these tags."
-    
-    formatted_question = COT_QUESTION_TEMPLATE.format(Question=question)
+    COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. No extra information or text outside of these tags."
+    OPEN_COT_QUESTION_TEMPLATE = "{Question}\nThink through the question step by step, enclose your reasoning process in <think>...</think> tags. Then provide the answer inside <answer>...</answer> tags. No extra information or text outside of these tags."
+
+    if task == "mcq" or task == "cls":
+        formatted_question = COT_QUESTION_TEMPLATE.format(Question=question)
+    elif task == "vqa":
+        formatted_question = OPEN_COT_QUESTION_TEMPLATE.format(Question=question)
 
     return {
         "images": [image_path],

@@ -30,26 +30,13 @@ os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
 MODEL_PATHS = {
     "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
-    "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_lorarank16/v0-20251222-114318/checkpoint-200-merged/",
-    "qwen3_vl-4b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16/v0-20251222-114306/checkpoint-200-merged/",
-    "qwen3_vl-4b-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v0-20251222-194902/checkpoint-200-merged/",
+    # "qwen3_vl-4b-thinking": "/data/ckpt/Qwen3-VL-4B-Thinking/",
+    "Lingshu-7B": "/data/ckpt/Lingshu-7B/",
+    "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_lorarank16/v1-20251222-215426/checkpoint-2922-merged/",
+    "qwen3_vl-4b-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_sft_kdw0.5_lorarank16_hypocritical/v4-20251224-173742/checkpoint-2922-merged/",
+    "qwen3_vl-4b-cpt-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_lorarank16/v0-20251225-042643/checkpoint-2922-merged/",
+    "qwen3_vl-4b-cpt-sft-kd-w0.5_hypocritical": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft/qwen3_vl_4b_cpt_sft_kdw0.5_lorarank16_hypocritical/v0-20251227-160912/checkpoint-2922-merged/",
 }
-# MODEL_PATHS = {
-#     "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
-#     "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_lorarank16/v1-20251221-213711/checkpoint-83-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.1": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_kdw0.1_lorarank16/v0-20251221-213739/checkpoint-83-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.3": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_kdw0.3_lorarank16/v0-20251222-023802/checkpoint-83-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_kdw0.5_lorarank16/v0-20251222-023823/checkpoint-83-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.7": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_kdw0.7_lorarank16/v0-20251222-063909/checkpoint-83-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.9": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqa/qwen3_vl_4b_sft_kdw0.9_lorarank16/v0-20251222-063939/checkpoint-83-merged/",
-# }
-# MODEL_PATHS = {
-#     "qwen3_vl-4b-instruct": "/data/ckpt/Qwen3-VL-4B-Instruct/",
-#     "qwen3_vl-4b-sft": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqammu/qwen3_vl_4b_sft_lorarank16/v0-20251220-214403/checkpoint-206-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.3": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqammu/qwen3_vl_4b_sft_kdw0.3_lorarank16/v0-20251220-214455/checkpoint-206-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.5": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqammu/qwen3_vl_4b_sft_kdw0.5_lorarank16/v0-20251221-054650/checkpoint-206-merged/",
-#     "qwen3_vl-4b-sft-kd-w0.7": "/data/ljd/Pathology_FM_LLM/expriment/output4paper/sft_vqammu/qwen3_vl_4b_sft_kdw0.7_lorarank16/v0-20251221-103132/checkpoint-206-merged/",
-# }
 CLOSE_QUESTION_TEMPLATE = "{Question}\nPlease output only the final answer option directly. Just one letter (A, B, C, or D) with no explanation or additional text."
 
 # Dataset Constants
@@ -91,10 +78,6 @@ for ds in CLASSIFICATION_DATASETS:
         "path": os.path.join(CLASSIFICATION_BASE_DIR, ds, "test.json"),
         "type": "mcq",
     }
-
-# ============================================================================
-# Data Loaders
-# ============================================================================
 
 def load_pathvqa_dataset(config: Dict) -> List[Dict]:
     with open(config["path"], "r", encoding="utf-8") as f:
@@ -323,11 +306,12 @@ def aggregate_to_csv(models, datasets):
 # ============================================================================
 
 def main():
+    print("Available models:", list(MODEL_PATHS.keys()))
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default=None, choices=list(MODEL_PATHS.keys()))
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--gpu_util", type=float, default=0.8)
+    parser.add_argument("--gpu_util", type=float, default=0.9)
     parser.add_argument("--limit", type=int, default=None, help="Limit number of samples for testing")
     args = parser.parse_args()
     

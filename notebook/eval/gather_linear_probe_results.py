@@ -15,9 +15,10 @@ def gather_results(base_path, output_file):
     models_info = {
         "conchv1.5": {"acc": "lin_acc", "auc": "lin_auroc"},
         "uni2": {"acc": "lin_acc", "auc": "lin_auroc"},
-        "qwen3_vl-2b": {"acc": "accuracy", "auc": "auc"},
-        "qwen3_vl-2b-sft": {"acc": "accuracy", "auc": "auc"},
-        "qwen3_vl-2b-sft-kd-w0.5": {"acc": "accuracy", "auc": "auc"},
+        "virchow2": {"acc": "lin_acc", "auc": "lin_auroc"},
+        # "qwen3_vl-2b": {"acc": "accuracy", "auc": "auc"},
+        # "qwen3_vl-2b-sft": {"acc": "accuracy", "auc": "auc"},
+        # "qwen3_vl-2b-sft-kd-w0.5": {"acc": "accuracy", "auc": "auc"},
     }
 
     try:

@@ -16,7 +16,6 @@ from transformers import Trainer as HfTrainer
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 from transformers.utils import is_peft_available
 import torch.nn.functional as F
-from conchv1_5 import create_model_from_pretrained
 from PIL import Image
 from swift.utils import (
     JsonlWriter,

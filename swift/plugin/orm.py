@@ -11,12 +11,30 @@ from pfm.conch.conch.factory import create_model_from_pretrained
 from pfm.conch.conch.custom_tokenizer import get_tokenizer
 from PIL import Image
 from pfm.conch.conch.custom_tokenizer import tokenize
-from gliner import GLiNER
+# from gliner import GLiNER
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 if TYPE_CHECKING:
     from swift.llm import InferRequest
 
+import asyncio
+import os
+import re
+import textwrap
+from collections import Counter
+from copy import deepcopy
+from typing import Dict, List, Union
+
+import json
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import numpy as np
+# from gliner import GLiNER
+import sys
+sys.path.append("../../../")
+from pfm.conch.conch.factory import create_model_from_pretrained
+from pfm.conch.conch.custom_tokenizer import get_tokenizer, tokenize
+from PIL import Image
 
 class ORM:
     """Offline Reward Model base class."""
@@ -772,6 +790,7 @@ class VqaBertReward(ORM):
         self.model_name = model_name_or_path
         self.tokenizer = None
         self.model = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     d: float = None  # Placeholder for single line replacement if needed, but not used here.
 
@@ -786,9 +805,7 @@ class VqaBertReward(ORM):
             
             print(f"Loading BERT model for reward: {self.model_name}...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModel.from_pretrained(self.model_name)
-            if torch.cuda.is_available():
-                self.model = self.model.cuda()
+            self.model = AutoModel.from_pretrained(self.model_name).to(self.device)
             
             VqaBertReward._global_model_cache[self.model_name] = (self.tokenizer, self.model)
             self.tokenizer, self.model = VqaBertReward._global_model_cache[self.model_name]
@@ -803,9 +820,7 @@ class VqaBertReward(ORM):
     def __call__(self, completions, solution, **kwargs) -> List[float]:
         import torch
         import torch.nn.functional as F
-
-        tasks = kwargs.get("task", [None] * len(completions))
-        
+        tasks = kwargs.get("task", [None] * len(completions))        
         # Check if we have any VQA tasks before loading model/processing
         has_vqa = any(t == 'vqa' for t in tasks)
         if not has_vqa:
@@ -854,6 +869,7 @@ class VqaEmbeddingReward(ORM):
     def __init__(self, model_name_or_path="/data/ckpt/Qwen3-Embedding-0.6B"):
         self.model_name = model_name_or_path
         self.model = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     _global_model_cache = {}
 
@@ -871,11 +887,11 @@ class VqaEmbeddingReward(ORM):
             #     tokenizer_kwargs={"padding_side": "left"},
             # )
             self.model = SentenceTransformer(self.model_name)
+            self.model = self.model.to(self.device)
             VqaEmbeddingReward._global_model_cache[self.model_name] = self.model
 
     def __call__(self, completions, solution, **kwargs) -> List[float]:
         tasks = kwargs.get("task", [None] * len(completions))
-
         # Check if we have any VQA tasks before loading model/processing
         has_vqa = any(t == 'vqa' for t in tasks)
         if not has_vqa:
@@ -980,11 +996,12 @@ class CoTConsistencyReward(ORM):
     It uses a PubMedBERT model fine-tuned on MNLI to verify if the reasoning entails the answer.
     """
 
-    def __init__(self, model_name_or_path="/data/ckpt/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext-finetuned-mnli/"):
+    def __init__(self, model_name_or_path="/data/ckpt/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext-finetuned-mnli/", min_step_ratio=0.0):
         self.model_name = model_name_or_path
+        self.min_step_ratio = min_step_ratio
         self.tokenizer = None
         self.model = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     _global_model_cache = {}
 
@@ -992,7 +1009,6 @@ class CoTConsistencyReward(ORM):
         if self.model_name in CoTConsistencyReward._global_model_cache:
             self.tokenizer, self.model = CoTConsistencyReward._global_model_cache[self.model_name]
         else:
-            
             print(f"Loading CoT Consistency model: {self.model_name}...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
@@ -1001,6 +1017,10 @@ class CoTConsistencyReward(ORM):
 
     def get_prediction(self, premise, hypothesis, label_map):
         inputs = self.tokenizer(premise, hypothesis, return_tensors='pt', truncation='only_first').to(self.device)
+        print(inputs)
+        for k, v in inputs.items():
+            print(k, v.shape)
+        # raise Exception("test")
         with torch.no_grad():
             logits = self.model(**inputs).logits
             probs = logits.softmax(dim=1).cpu().numpy()[0]
@@ -1008,6 +1028,13 @@ class CoTConsistencyReward(ORM):
         return label_map[predicted_index], probs
 
     def __call__(self, completions, solution, **kwargs) -> List[float]:
+        # Curriculum Learning Check
+        trainer_state = kwargs.get('trainer_state')
+        if trainer_state:
+            current_ratio = trainer_state.global_step / trainer_state.max_steps
+            if current_ratio < self.min_step_ratio:
+                # Return 0.0 reward during Phase 1
+                return [0.0] * len(completions)
         self._load_model()
         rewards = []
         label_map = {0: 'entailment', 1: 'neutral', 2: 'contradiction'}
@@ -1034,6 +1061,9 @@ class CoTConsistencyReward(ORM):
             question = queries[idx] if isinstance(queries, list) else queries
             if not question: question = "" # Fallback
             
+            print("cot:", cot)
+            print("question:", question)
+            print("correct_answer:", correct_answer)
             # Scheme 1
             premise1 = f"{cot}"
             hypothesis1 = f"{question}\nThe answer is {correct_answer}."
@@ -1046,22 +1076,22 @@ class CoTConsistencyReward(ORM):
             premise3 = f"{cot}"
             hypothesis3 = f"The answer is {correct_answer}."
             
-            try:
-                pred1, probs1 = self.get_prediction(premise1, hypothesis1, label_map)
-                pred2, probs2 = self.get_prediction(premise2, hypothesis2, label_map)
-                pred3, probs3 = self.get_prediction(premise3, hypothesis3, label_map)
-                
-                # Logic: If ANY is NOT contradiction, then Consistent (Reward 1.0)
-                # If ALL are contradiction, then CONFLICT (Reward 0.0)
-                
-                if pred1 != 'contradiction' or pred2 != 'contradiction' or pred3 != 'contradiction':
-                    rewards.append(1.0)
-                else:
-                    rewards.append(0.0)
-                    
-            except Exception as e:
-                print(f"Error in CoTConsistencyReward inference: {e}")
-                rewards.append(0.0)
+            pred1, probs1 = self.get_prediction(premise1, hypothesis1, label_map)
+            pred2, probs2 = self.get_prediction(premise2, hypothesis2, label_map)
+            pred3, probs3 = self.get_prediction(premise3, hypothesis3, label_map)
+            
+            # Logic: If ANY is NOT contradiction, then Consistent (Reward 1.0)
+            # If ALL are contradiction, then CONFLICT (Reward 0.0)
+            
+            # if pred1 != 'contradiction' or pred2 != 'contradiction' or pred3 != 'contradiction':
+            #     rewards.append(1.0)
+            # else:
+            #     rewards.append(0.0)
+            probs_avg = (probs1 + probs2 + probs3) / 3
+            print(probs_avg) #[0.6130026  0.24925117 0.13774626]
+            # max value idx:reward 0:1, 1:0, 2:-1
+            rewards_val = [1, 0, -1]
+            rewards.append(rewards_val[np.argmax(probs_avg)])
 
         return rewards
 
@@ -1073,13 +1103,10 @@ class ConchGLiNERReward(ORM):
     """
 
     def __init__(self, 
-                 gliner_model_path="/data/ckpt/camembert-bio-gliner-v0.1/",
                  conch_model_path="/data/ckpt/conch/pytorch_model.bin",
-                 gliner_labels=None):
-        self.gliner_model_path = gliner_model_path
+                 min_step_ratio=0.0):
         self.conch_model_path = conch_model_path
-        self.gliner_labels = gliner_labels
-        self.gliner_model = None
+        self.min_step_ratio = min_step_ratio
         self.conch_model = None
         self.conch_transform = None
         self.tokenizer = None 
@@ -1088,80 +1115,37 @@ class ConchGLiNERReward(ORM):
     _global_models = {}
 
     def _load_models(self):
-        # Load GLiNER
-        if 'gliner' not in ConchGLiNERReward._global_models:
-            print(f"Loading GLiNER model: {self.gliner_model_path}...")
-            model = GLiNER.from_pretrained(self.gliner_model_path).to(self.device)
-            ConchGLiNERReward._global_models['gliner'] = model
-        self.gliner_model = ConchGLiNERReward._global_models['gliner']
-
         # Load Conch
         if 'conch' not in ConchGLiNERReward._global_models:
-            
-            
             print(f"Loading Conch model: {self.conch_model_path}...")
-            try:
-                model, transform = create_model_from_pretrained(
-                    model_cfg='conch_ViT-B-16',
-                    checkpoint_path=self.conch_model_path,
-                    device=self.device
-                )
-                model.eval()
-                tokenizer = get_tokenizer()
-                ConchGLiNERReward._global_models['conch'] = (model, transform, tokenizer)
-            except Exception as e:
-                print(f"Error loading Conch: {e}")
-                raise e
-        
+            model, transform = create_model_from_pretrained(
+                model_cfg='conch_ViT-B-16',
+                checkpoint_path=self.conch_model_path,
+                device=self.device
+            )
+            model.eval()
+            tokenizer = get_tokenizer()
+            ConchGLiNERReward._global_models['conch'] = (model, transform, tokenizer)
+            
         self.conch_model, self.conch_transform, self.tokenizer = ConchGLiNERReward._global_models['conch']
 
-    def extract_morphology(self, text):
-        if self.gliner_labels is None:
-            labels = ["morphological feature", "cell structure", "tissue architecture", "abnormality", "pathology description"]
-        else:
-            labels = self.gliner_labels
-
-        if len(text) > 2000:
-            text = text[:2000]
-
-        try:
-            entities = self.gliner_model.predict_entities(text, labels, flat_ner=True)
-        except Exception as e:
-            print(f"GLiNER error: {e}")
-            return []
-
-        seen = set()
-        raw_texts = []
-        for entity in entities:
-             text_val = entity['text'].strip()
-             if not text_val: continue
-             if text_val.lower() not in seen:
-                 seen.add(text_val.lower())
-                 raw_texts.append(text_val)
-        
-        final_keywords = []
-        for i, t1 in enumerate(raw_texts):
-            is_substring = False
-            for j, t2 in enumerate(raw_texts):
-                if i != j and t1.lower() in t2.lower():
-                    is_substring = True
-                    break
-            if not is_substring:
-                final_keywords.append(t1)
-        return final_keywords
-
     def __call__(self, completions, solution, **kwargs) -> List[float]:
+        # Curriculum Learning Check
+        trainer_state = kwargs.get('trainer_state', None)
+        if trainer_state:
+            current_ratio = trainer_state.global_step / trainer_state.max_steps
+            if current_ratio < self.min_step_ratio:
+                # Return 0.0 reward during Phase 1
+                return [0.0] * len(completions)
+        # print("-----kwargs: ", kwargs)
         self._load_models()
-
-
         rewards = []
         
         # Check for images in kwargs
         # Assuming typical SWIFT/VLM format where `images` is a list of paths or PIL objects
         images = kwargs.get('images', [])
-        # Also check `image_paths` key
         if not images:
-             images = kwargs.get('image_paths', [])
+            images = kwargs.get('image_paths', [])
 
         for idx, pred in enumerate(completions):
             # 1. Get Image
@@ -1174,61 +1158,51 @@ class ConchGLiNERReward(ORM):
                 img_obj = images[0]
             elif idx < len(images):
                 img_obj = images[idx]
-            
-            if img_obj is None:
-                # If no image found, return 0.0 or fail
-                rewards.append(0.0)
-                continue
-            
-            if isinstance(img_obj, str):
-                 try:
-                     img_obj = Image.open(img_obj).convert('RGB')
-                 except Exception:
-                     rewards.append(0.0)
-                     continue
+            # print("img_obj: ", img_obj)
+            assert img_obj is not None
+            #img_obj:  [{'bytes': None, 'path': '/data/dataset/vqa/PathMMU/images/5969f686156ee3ce9d4a298d04c2b5e78aa12809512e772c6ac34b7320f038d8.jpg'}]
+            img_obj = img_obj[0]['path'] 
+            assert isinstance(img_obj, str)
+            img_obj = Image.open(img_obj).convert('RGB')
 
             # 2. Extract Morphology from CoT
             think_match = re.search(r"<think>(.*?)</think>", pred, re.DOTALL)
             cot = think_match.group(1).strip() if think_match else ""
             
             if not cot:
-                 # Fallback: try full text if no think tag?
-                 # User script falls back to `reasoning_cot` which IS the text.
-                 # Here `pred` is the generated text.
-                 # If no think tag, assume whole pred is reasoning? Usually not safe for VQA.
-                 # But let's assume if <think> missing, maybe use whole text?
-                 # Or return 0.0?
-                 # ConchGLiNERReward is for CoT quality. If no CoT, quality is undefined or 0.
-                 # But let's fallback to full pred to be generous or consistent with script logic.
-                 cot = pred
+                cot = pred
 
-            morph_features = self.extract_morphology(cot)
-            morph_text = ", ".join(morph_features)
+            # print("cot: ", cot)
+            # Split cot into sentences
+            # morph_text = cot
+            morph_text = [s.strip() for s in re.split(r'[.!?\n]', cot) if s.strip()]
             if not morph_text:
-                morph_text = cot 
+                morph_text = [cot]
 
             with torch.no_grad():
-                try:
-                    # 3. Encode Image
-                    image_tensor = self.conch_transform(img_obj).unsqueeze(0).to(self.device)
-                    image_emb = self.conch_model.encode_image(image_tensor, proj_contrast=True, normalize=True)
+                # 3. Encode Image
+                image_tensor = self.conch_transform(img_obj).unsqueeze(0).to(self.device)
+                image_emb = self.conch_model.encode_image(image_tensor, proj_contrast=True, normalize=True)
+                # print("image_emb: ", image_emb.shape)
 
-                    # 4. Encode Text
-                    text_tokens = tokenize(texts=[morph_text], tokenizer=self.tokenizer).to(self.device)
-                    text_emb = self.conch_model.encode_text(text_tokens)
+                # 4. Encode Text
+                # morph_text is a list of strings, pass directly to tokenize
+                text_tokens = tokenize(texts=morph_text, tokenizer=self.tokenizer).to(self.device)
+                text_emb = self.conch_model.encode_text(text_tokens)
+                # print("text_emb: ", text_emb.shape)
 
-                    # 5. Similarity
-                    raw_sim = torch.nn.functional.cosine_similarity(image_emb, text_emb, dim=1).item()
-                    
-                    # Scale to [0, 1]
-                    sim = (raw_sim + 1) / 2
-                    rewards.append(sim)
-                except Exception as e:
-                    print(f"Conch inference error: {e}")
-                    rewards.append(0.0)
-                    
+                # 5. Similarity
+                # image_emb: (1, D), text_emb: (N, D) -> sim: (N,)
+                sims = torch.nn.functional.cosine_similarity(image_emb, text_emb, dim=1)
+                # print("sims: ", sims.shape, sims)
+                # Use average similarity of all sentences
+                raw_sim = sims.mean().item()
+                # print("raw_sim: ", raw_sim)
+
+                # Scale to [0, 1]
+                sim = (raw_sim + 1) / 2
+                rewards.append(sim)
         return rewards
-
 
 # A registry mapping names to their corresponding ORM classes.
 orms = {

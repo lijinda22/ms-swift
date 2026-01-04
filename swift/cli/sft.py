@@ -2,6 +2,8 @@
 import os
 import logging
 from swift.utils import get_logger
+import sys
+sys.path.append("../../")
 
 logger = get_logger()
 
